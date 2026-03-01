@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os/signal"
@@ -10,13 +11,18 @@ import (
 	"time"
 
 	"github.com/myusername/cloudinfer/internal/api"
+	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/metrics"
 	"github.com/myusername/cloudinfer/internal/telemetry"
 )
 
 func main() {
-	cfg, err := config.Load()
+	var configPath string
+	flag.StringVar(&configPath, "config", "", "path to configuration file")
+	flag.Parse()
+
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
@@ -26,7 +32,21 @@ func main() {
 	mux := http.NewServeMux()
 	collector := metrics.New()
 	logger := telemetry.NewJSONStdoutLogger()
-	api.NewServer(&cfg, logger, collector).RegisterRoutes(mux)
+
+	var vertexAdapter *vertex.VertexAdapter
+	if cfg.Vertex.IsConfigured() {
+		vertexAdapter, err = vertex.NewAdapter(context.Background(), cfg.Vertex)
+		if err != nil {
+			log.Fatalf("initialize vertex adapter: %v", err)
+		}
+		defer func() {
+			if err := vertexAdapter.Close(); err != nil {
+				log.Printf("close vertex adapter: %v", err)
+			}
+		}()
+	}
+
+	api.NewServer(&cfg, logger, collector, vertexAdapter).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
