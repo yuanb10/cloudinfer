@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/metrics"
 	"github.com/myusername/cloudinfer/internal/telemetry"
@@ -13,13 +14,15 @@ type Server struct {
 	cfg     *config.Config
 	logger  telemetry.Logger
 	metrics *metrics.Collector
+	vertex  *vertex.VertexAdapter
 }
 
-func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.Collector) *Server {
+func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.Collector, vertexAdapter *vertex.VertexAdapter) *Server {
 	return &Server{
 		cfg:     cfg,
 		logger:  logger,
 		metrics: collector,
+		vertex:  vertexAdapter,
 	}
 }
 
