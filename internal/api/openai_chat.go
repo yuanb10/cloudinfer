@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	openaibackend "github.com/myusername/cloudinfer/internal/backends/openai"
 	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/telemetry"
 )
@@ -64,7 +65,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if requestModel == "" {
 		requestModel = "mock-model"
 	}
-	responseModel := s.responseModel(requestModel)
+	responseModel := s.resolvedResponseModel(requestModel)
 
 	if req.Stream {
 		s.streamChatCompletion(w, r, id, created, responseModel, req.Messages, start)
@@ -111,12 +112,17 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	w.Header().Set("X-Request-Id", id)
 	w.WriteHeader(http.StatusOK)
 
-	if s.vertex == nil {
-		s.streamMockChatCompletion(w, r, flusher, id, created, responseModel, start)
+	if s.cfg != nil && s.cfg.Backend == "openai" && s.openai != nil {
+		s.streamOpenAIChatCompletion(w, r, flusher, id, created, reqModelForStream(responseModel, s.openai), messages, start)
 		return
 	}
 
-	s.streamVertexChatCompletion(w, r, flusher, id, created, responseModel, messages, start)
+	if s.cfg != nil && s.cfg.Backend == "vertex" && s.vertex != nil {
+		s.streamVertexChatCompletion(w, r, flusher, id, created, responseModel, messages, start)
+		return
+	}
+
+	s.streamMockChatCompletion(w, r, flusher, id, created, responseModel, start)
 }
 
 func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, responseModel string, start time.Time) {
@@ -309,6 +315,109 @@ func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Reque
 	s.recordChatCompletion(id, responseModel, true, "ok", ttftMs, start, created)
 }
 
+func (s *Server) streamOpenAIChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, responseModel string, messages []chatMessage, start time.Time) {
+	var ttftMs int64
+	firstTokenReceived := false
+
+	tokenCh, errCh := s.openai.StreamText(r.Context(), responseModel, toOpenAIMessages(messages))
+
+	for tokenCh != nil || errCh != nil {
+		select {
+		case <-r.Context().Done():
+			s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
+			return
+		case token, ok := <-tokenCh:
+			if !ok {
+				tokenCh = nil
+				continue
+			}
+
+			if !firstTokenReceived {
+				ttftMs = time.Since(start).Milliseconds()
+				firstTokenReceived = true
+			}
+
+			chunk := chatCompletionResponse{
+				ID:      id,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   responseModel,
+				Choices: []chatCompletionChoice{
+					{
+						Index:        0,
+						Delta:        &chatDelta{Content: token},
+						FinishReason: nil,
+					},
+				},
+			}
+
+			if err := writeSSEData(w, chunk); err != nil {
+				status := classifyStreamError(r)
+				s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
+				return
+			}
+			flusher.Flush()
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err == nil {
+				continue
+			}
+
+			status := classifyProviderError(r)
+			s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
+			return
+		}
+	}
+
+	stop := "stop"
+	finalChunk := chatCompletionResponse{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   responseModel,
+		Choices: []chatCompletionChoice{
+			{
+				Index:        0,
+				Delta:        &chatDelta{},
+				FinishReason: &stop,
+			},
+		},
+	}
+
+	select {
+	case <-r.Context().Done():
+		s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
+		return
+	default:
+	}
+
+	if err := writeSSEData(w, finalChunk); err != nil {
+		status := classifyStreamError(r)
+		s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
+		return
+	}
+	flusher.Flush()
+
+	select {
+	case <-r.Context().Done():
+		s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
+		return
+	default:
+	}
+
+	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+		status := classifyStreamError(r)
+		s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
+		return
+	}
+	flusher.Flush()
+
+	s.recordChatCompletion(id, responseModel, true, "ok", ttftMs, start, created)
+}
+
 func writeSSEData(w http.ResponseWriter, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -403,10 +512,34 @@ func toVertexMessages(messages []chatMessage) []vertex.Message {
 	return vertexMessages
 }
 
-func (s *Server) responseModel(requestModel string) string {
-	if s != nil && s.vertex != nil && s.cfg != nil && s.cfg.Vertex.Model != "" {
+func toOpenAIMessages(messages []chatMessage) []openaibackend.Message {
+	openAIMessages := make([]openaibackend.Message, 0, len(messages))
+	for _, message := range messages {
+		openAIMessages = append(openAIMessages, openaibackend.Message{
+			Role:    message.Role,
+			Content: message.Content,
+		})
+	}
+
+	return openAIMessages
+}
+
+func (s *Server) resolvedResponseModel(requestModel string) string {
+	if s != nil && s.cfg != nil && s.cfg.Backend == "openai" && s.openai != nil {
+		return s.openai.ResolvedModel(requestModel)
+	}
+
+	if s != nil && s.vertex != nil && s.cfg != nil && s.cfg.Backend == "vertex" && s.cfg.Vertex.Model != "" {
 		return s.cfg.Vertex.Model
 	}
 
 	return requestModel
+}
+
+func reqModelForStream(responseModel string, adapter *openaibackend.Adapter) string {
+	if adapter == nil {
+		return responseModel
+	}
+
+	return responseModel
 }

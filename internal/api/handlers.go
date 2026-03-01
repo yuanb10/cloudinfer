@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	openaibackend "github.com/myusername/cloudinfer/internal/backends/openai"
 	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/metrics"
@@ -15,14 +16,16 @@ type Server struct {
 	logger  telemetry.Logger
 	metrics *metrics.Collector
 	vertex  *vertex.VertexAdapter
+	openai  *openaibackend.Adapter
 }
 
-func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.Collector, vertexAdapter *vertex.VertexAdapter) *Server {
+func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.Collector, vertexAdapter *vertex.VertexAdapter, openAIAdapter *openaibackend.Adapter) *Server {
 	return &Server{
 		cfg:     cfg,
 		logger:  logger,
 		metrics: collector,
 		vertex:  vertexAdapter,
+		openai:  openAIAdapter,
 	}
 }
 

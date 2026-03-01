@@ -9,6 +9,8 @@ import (
 
 type Config struct {
 	ServerConfig `mapstructure:",squash"`
+	Backend      string       `mapstructure:"backend" yaml:"backend"`
+	OpenAI       OpenAIConfig `mapstructure:"openai" yaml:"openai"`
 	Vertex       VertexConfig `mapstructure:"vertex" yaml:"vertex"`
 }
 
@@ -21,6 +23,14 @@ type VertexConfig struct {
 	Project  string `mapstructure:"project" yaml:"project"`
 	Location string `mapstructure:"location" yaml:"location"`
 	Model    string `mapstructure:"model" yaml:"model"`
+}
+
+type OpenAIConfig struct {
+	APIKeyEnv      string            `mapstructure:"api_key_env" yaml:"api_key_env"`
+	BaseURL        string            `mapstructure:"base_url" yaml:"base_url"`
+	Model          string            `mapstructure:"model" yaml:"model"`
+	TimeoutSeconds int               `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
+	ExtraHeaders   map[string]string `mapstructure:"extra_headers" yaml:"extra_headers"`
 }
 
 func (c ServerConfig) Address() string {
@@ -69,6 +79,11 @@ func Load(configPath string) (Config, error) {
 
 	v.SetDefault("server_host", "0.0.0.0")
 	v.SetDefault("server_port", 8080)
+	v.SetDefault("backend", "")
+	v.SetDefault("openai.api_key_env", "OPENAI_API_KEY")
+	v.SetDefault("openai.base_url", "https://api.openai.com/v1")
+	v.SetDefault("openai.model", "gpt-4o-mini")
+	v.SetDefault("openai.timeout_seconds", 60)
 	v.SetDefault("vertex.project", "")
 	v.SetDefault("vertex.location", "")
 	v.SetDefault("vertex.model", "")

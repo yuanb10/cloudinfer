@@ -117,7 +117,7 @@ func newTestHTTPServer(t *testing.T) *httptest.Server {
 	collector := metrics.New()
 
 	mux := http.NewServeMux()
-	NewServer(cfg, logger, collector, nil).RegisterRoutes(mux)
+	NewServer(cfg, logger, collector, nil, nil).RegisterRoutes(mux)
 
 	return httptest.NewServer(mux)
 }

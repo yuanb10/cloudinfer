@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/myusername/cloudinfer/internal/api"
+	openaibackend "github.com/myusername/cloudinfer/internal/backends/openai"
 	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/metrics"
@@ -34,7 +35,7 @@ func main() {
 	logger := telemetry.NewJSONStdoutLogger()
 
 	var vertexAdapter *vertex.VertexAdapter
-	if cfg.Vertex.IsConfigured() {
+	if cfg.Backend == "vertex" {
 		vertexAdapter, err = vertex.NewAdapter(context.Background(), cfg.Vertex)
 		if err != nil {
 			log.Fatalf("initialize vertex adapter: %v", err)
@@ -46,7 +47,20 @@ func main() {
 		}()
 	}
 
-	api.NewServer(&cfg, logger, collector, vertexAdapter).RegisterRoutes(mux)
+	var openAIAdapter *openaibackend.Adapter
+	if cfg.Backend == "openai" {
+		openAIAdapter, err = openaibackend.New(cfg.OpenAI)
+		if err != nil {
+			log.Fatalf("initialize openai-compatible adapter: %v", err)
+		}
+		defer func() {
+			if err := openAIAdapter.Close(); err != nil {
+				log.Printf("close openai-compatible adapter: %v", err)
+			}
+		}()
+	}
+
+	api.NewServer(&cfg, logger, collector, vertexAdapter, openAIAdapter).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
