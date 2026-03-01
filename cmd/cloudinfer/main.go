@@ -11,6 +11,8 @@ import (
 
 	"github.com/myusername/cloudinfer/internal/api"
 	"github.com/myusername/cloudinfer/internal/config"
+	"github.com/myusername/cloudinfer/internal/metrics"
+	"github.com/myusername/cloudinfer/internal/telemetry"
 )
 
 func main() {
@@ -22,7 +24,9 @@ func main() {
 	log.Printf("configuration loaded, server address=%s", cfg.Address())
 
 	mux := http.NewServeMux()
-	api.NewServer(&cfg).RegisterRoutes(mux)
+	collector := metrics.New()
+	logger := telemetry.NewJSONStdoutLogger()
+	api.NewServer(&cfg, logger, collector).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
