@@ -39,6 +39,21 @@ func (c VertexConfig) IsComplete() bool {
 		strings.TrimSpace(c.Model) != ""
 }
 
+func (c VertexConfig) MissingFields() []string {
+	missing := make([]string, 0, 3)
+	if strings.TrimSpace(c.Project) == "" {
+		missing = append(missing, "vertex.project")
+	}
+	if strings.TrimSpace(c.Location) == "" {
+		missing = append(missing, "vertex.location")
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		missing = append(missing, "vertex.model")
+	}
+
+	return missing
+}
+
 func Load(configPath string) (Config, error) {
 	v := viper.New()
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

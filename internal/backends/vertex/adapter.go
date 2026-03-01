@@ -36,6 +36,14 @@ func NewAdapter(ctx context.Context, cfg config.VertexConfig) (*VertexAdapter, e
 }
 
 func (a *VertexAdapter) Close() error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+
+	if closer, ok := any(a.client).(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+
 	return nil
 }
 
@@ -86,6 +94,7 @@ func (a *VertexAdapter) StreamText(ctx context.Context, modelName string, messag
 			}
 		}
 
+		sentSoFar := ""
 		for resp, err := range a.client.Models.GenerateContentStream(ctx, modelName, contents, genConfig) {
 			if err != nil {
 				errCh <- wrapVertexError("stream next", err)
@@ -100,10 +109,19 @@ func (a *VertexAdapter) StreamText(ctx context.Context, modelName string, messag
 				continue
 			}
 
+			suffix := text
+			if strings.HasPrefix(text, sentSoFar) {
+				suffix = text[len(sentSoFar):]
+			}
+			sentSoFar = text
+			if suffix == "" {
+				continue
+			}
+
 			select {
 			case <-ctx.Done():
 				return
-			case tokenCh <- text:
+			case tokenCh <- suffix:
 			}
 		}
 	}()

@@ -1,7 +1,8 @@
 package config
 
 import (
-	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -13,7 +14,11 @@ func Validate(cfg Config) error {
 	}
 
 	if cfg.Vertex.IsConfigured() && !cfg.Vertex.IsComplete() {
-		return errors.New("vertex project, location, and model must all be set when vertex is configured")
+		missing := cfg.Vertex.MissingFields()
+		return fmt.Errorf(
+			"vertex configuration is incomplete: set %s when any vertex field is configured",
+			strings.Join(missing, ", "),
+		)
 	}
 
 	return nil

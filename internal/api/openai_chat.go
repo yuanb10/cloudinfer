@@ -60,13 +60,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	modelName := req.Model
-	if modelName == "" {
-		modelName = "mock-model"
+	requestModel := req.Model
+	if requestModel == "" {
+		requestModel = "mock-model"
 	}
+	responseModel := s.responseModel(requestModel)
 
 	if req.Stream {
-		s.streamChatCompletion(w, r, id, created, modelName, req.Messages, start)
+		s.streamChatCompletion(w, r, id, created, responseModel, req.Messages, start)
 		return
 	}
 
@@ -75,7 +76,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ID:      id,
 		Object:  "chat.completion",
 		Created: created,
-		Model:   modelName,
+		Model:   responseModel,
 		Choices: []chatCompletionChoice{
 			{
 				Index: 0,
@@ -89,18 +90,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	ttftMs := time.Since(start).Milliseconds()
 	if err := writeJSON(w, http.StatusOK, resp); err != nil {
-		s.recordChatCompletion(id, modelName, false, "internal_error", ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, false, "internal_error", ttftMs, start, created)
 		return
 	}
 
-	s.recordChatCompletion(id, modelName, false, "ok", ttftMs, start, created)
+	s.recordChatCompletion(id, responseModel, false, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id string, created int64, modelName string, messages []chatMessage, start time.Time) {
+func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id string, created int64, responseModel string, messages []chatMessage, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		s.recordChatCompletion(id, modelName, true, "internal_error", 0, start, created)
+		s.recordChatCompletion(id, responseModel, true, "internal_error", 0, start, created)
 		return
 	}
 
@@ -111,21 +112,21 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	w.WriteHeader(http.StatusOK)
 
 	if s.vertex == nil {
-		s.streamMockChatCompletion(w, r, flusher, id, created, modelName, start)
+		s.streamMockChatCompletion(w, r, flusher, id, created, responseModel, start)
 		return
 	}
 
-	s.streamVertexChatCompletion(w, r, flusher, id, created, modelName, messages, start)
+	s.streamVertexChatCompletion(w, r, flusher, id, created, responseModel, messages, start)
 }
 
-func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, modelName string, start time.Time) {
+func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, responseModel string, start time.Time) {
 	var ttftMs int64
 	firstChunkSent := false
 
 	for _, char := range "hello" {
 		select {
 		case <-r.Context().Done():
-			s.recordChatCompletion(id, modelName, true, "client_cancel", ttftMs, start, created)
+			s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
 			return
 		default:
 		}
@@ -134,7 +135,7 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 			ID:      id,
 			Object:  "chat.completion.chunk",
 			Created: created,
-			Model:   modelName,
+			Model:   responseModel,
 			Choices: []chatCompletionChoice{
 				{
 					Index:        0,
@@ -145,7 +146,7 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 		}
 
 		if err := writeSSEData(w, chunk); err != nil {
-			s.recordChatCompletion(id, modelName, true, classifyStreamError(r), ttftMs, start, created)
+			s.recordChatCompletion(id, responseModel, true, classifyStreamError(r), ttftMs, start, created)
 			return
 		}
 		if !firstChunkSent {
@@ -160,7 +161,7 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 		ID:      id,
 		Object:  "chat.completion.chunk",
 		Created: created,
-		Model:   modelName,
+		Model:   responseModel,
 		Choices: []chatCompletionChoice{
 			{
 				Index:        0,
@@ -172,49 +173,45 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 
 	select {
 	case <-r.Context().Done():
-		s.recordChatCompletion(id, modelName, true, "client_cancel", ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
 
 	if err := writeSSEData(w, finalChunk); err != nil {
-		s.recordChatCompletion(id, modelName, true, classifyStreamError(r), ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, true, classifyStreamError(r), ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
 	select {
 	case <-r.Context().Done():
-		s.recordChatCompletion(id, modelName, true, "client_cancel", ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
 
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-		s.recordChatCompletion(id, modelName, true, classifyStreamError(r), ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, true, classifyStreamError(r), ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
-	s.recordChatCompletion(id, modelName, true, "ok", ttftMs, start, created)
+	s.recordChatCompletion(id, responseModel, true, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, modelName string, messages []chatMessage, start time.Time) {
+func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, responseModel string, messages []chatMessage, start time.Time) {
 	var ttftMs int64
 	firstTokenReceived := false
 
-	// Resolve the actual Vertex model to use
-	vertexModel := s.cfg.Vertex.Model
-	if modelName != "" && modelName != "default" {
-		vertexModel = modelName
-	}
+	vertexModel := responseModel
 
 	tokenCh, errCh := s.vertex.StreamText(r.Context(), vertexModel, toVertexMessages(messages))
 
 	for tokenCh != nil || errCh != nil {
 		select {
 		case <-r.Context().Done():
-			s.recordChatCompletion(id, modelName, true, "client_cancel", ttftMs, start, created)
+			s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
 			return
 		case token, ok := <-tokenCh:
 			if !ok {
@@ -231,7 +228,7 @@ func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Reque
 				ID:      id,
 				Object:  "chat.completion.chunk",
 				Created: created,
-				Model:   modelName,
+				Model:   responseModel,
 				Choices: []chatCompletionChoice{
 					{
 						Index:        0,
@@ -243,8 +240,8 @@ func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Reque
 
 			if err := writeSSEData(w, chunk); err != nil {
 				status := classifyStreamError(r)
-				s.logVertexStreamError(id, status, vertexModel, err)
-				s.recordChatCompletion(id, modelName, true, status, ttftMs, start, created)
+				s.logVertexStreamError(id, status, err)
+				s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
 				return
 			}
 			flusher.Flush()
@@ -258,8 +255,8 @@ func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Reque
 			}
 
 			status := classifyProviderError(r)
-			s.logVertexStreamError(id, status, vertexModel, err)
-			s.recordChatCompletion(id, modelName, true, status, ttftMs, start, created)
+			s.logVertexStreamError(id, status, err)
+			s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
 			return
 		}
 	}
@@ -269,7 +266,7 @@ func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Reque
 		ID:      id,
 		Object:  "chat.completion.chunk",
 		Created: created,
-		Model:   modelName,
+		Model:   responseModel,
 		Choices: []chatCompletionChoice{
 			{
 				Index:        0,
@@ -281,35 +278,35 @@ func (s *Server) streamVertexChatCompletion(w http.ResponseWriter, r *http.Reque
 
 	select {
 	case <-r.Context().Done():
-		s.recordChatCompletion(id, modelName, true, "client_cancel", ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
 
 	if err := writeSSEData(w, finalChunk); err != nil {
 		status := classifyStreamError(r)
-		s.logVertexStreamError(id, status, vertexModel, err)
-		s.recordChatCompletion(id, modelName, true, status, ttftMs, start, created)
+		s.logVertexStreamError(id, status, err)
+		s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
 	select {
 	case <-r.Context().Done():
-		s.recordChatCompletion(id, modelName, true, "client_cancel", ttftMs, start, created)
+		s.recordChatCompletion(id, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
 
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 		status := classifyStreamError(r)
-		s.logVertexStreamError(id, status, vertexModel, err)
-		s.recordChatCompletion(id, modelName, true, status, ttftMs, start, created)
+		s.logVertexStreamError(id, status, err)
+		s.recordChatCompletion(id, responseModel, true, status, ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
-	s.recordChatCompletion(id, modelName, true, "ok", ttftMs, start, created)
+	s.recordChatCompletion(id, responseModel, true, "ok", ttftMs, start, created)
 }
 
 func writeSSEData(w http.ResponseWriter, payload any) error {
@@ -361,12 +358,12 @@ func (s *Server) recordChatCompletion(requestID string, modelName string, stream
 	}
 }
 
-func (s *Server) logVertexStreamError(requestID string, status string, modelName string, err error) {
+func (s *Server) logVertexStreamError(requestID string, status string, err error) {
 	if err == nil {
 		return
 	}
 
-	if status != "provider_error" && status != "internal_error" {
+	if status != "provider_error" {
 		return
 	}
 
@@ -376,13 +373,13 @@ func (s *Server) logVertexStreamError(requestID string, status string, modelName
 			requestID,
 			s.cfg.Vertex.Project,
 			s.cfg.Vertex.Location,
-			modelName,
+			s.cfg.Vertex.Model,
 			err,
 		)
 		return
 	}
 
-	log.Printf("vertex stream error request_id=%s provider=vertex model=%s err=%v", requestID, modelName, err)
+	log.Printf("vertex stream error request_id=%s project= location= model= err=%v", requestID, err)
 }
 
 func newChatCompletionID() string {
@@ -404,4 +401,12 @@ func toVertexMessages(messages []chatMessage) []vertex.Message {
 	}
 
 	return vertexMessages
+}
+
+func (s *Server) responseModel(requestModel string) string {
+	if s != nil && s.vertex != nil && s.cfg != nil && s.cfg.Vertex.Model != "" {
+		return s.cfg.Vertex.Model
+	}
+
+	return requestModel
 }
