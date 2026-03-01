@@ -1,2 +1,10 @@
 # Editor / IDE
 .vscode/
+DESIGN.md
+
+# Runtime config
+router.yaml
+*.local.yaml
+
+# Private docs
+docs/internal/

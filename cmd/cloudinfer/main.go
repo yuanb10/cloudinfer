@@ -9,8 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/myusername/cloudinfer/internal/api"
 	"github.com/myusername/cloudinfer/internal/config"
 )
@@ -21,12 +19,14 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	router := chi.NewRouter()
-	api.RegisterRoutes(router)
+	log.Printf("configuration loaded, server address=%s", cfg.Address())
+
+	mux := http.NewServeMux()
+	api.NewServer(&cfg).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
-		Handler:           router,
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -35,6 +35,7 @@ func main() {
 
 	serverErr := make(chan error, 1)
 	go func() {
+		log.Printf("starting cloudinfer server on %s", server.Addr)
 		serverErr <- server.ListenAndServe()
 	}()
 
@@ -43,12 +44,17 @@ func main() {
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server failed: %v", err)
 		}
+		log.Printf("server stopped")
 	case <-ctx.Done():
+		log.Printf("shutdown signal received, shutting down server")
+
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Fatalf("shutdown failed: %v", err)
 		}
+
+		log.Printf("server shutdown completed")
 	}
 }
