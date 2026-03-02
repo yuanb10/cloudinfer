@@ -9,9 +9,11 @@ import (
 
 type Config struct {
 	ServerConfig `mapstructure:",squash"`
-	Backend      string       `mapstructure:"backend" yaml:"backend"`
-	OpenAI       OpenAIConfig `mapstructure:"openai" yaml:"openai"`
-	Vertex       VertexConfig `mapstructure:"vertex" yaml:"vertex"`
+	Backend      string            `mapstructure:"backend" yaml:"backend"`
+	Routing      RoutingConfig     `mapstructure:"routing" yaml:"routing"`
+	Backends     []BackendInstance `mapstructure:"backends" yaml:"backends"`
+	OpenAI       OpenAIConfig      `mapstructure:"openai" yaml:"openai"`
+	Vertex       VertexConfig      `mapstructure:"vertex" yaml:"vertex"`
 }
 
 type ServerConfig struct {
@@ -23,6 +25,23 @@ type VertexConfig struct {
 	Project  string `mapstructure:"project" yaml:"project"`
 	Location string `mapstructure:"location" yaml:"location"`
 	Model    string `mapstructure:"model" yaml:"model"`
+}
+
+type RoutingConfig struct {
+	Enabled         bool    `mapstructure:"enabled" yaml:"enabled"`
+	EnabledSet      bool    `mapstructure:"-" yaml:"-"`
+	Policy          string  `mapstructure:"policy" yaml:"policy"`
+	CooldownSeconds int     `mapstructure:"cooldown_seconds" yaml:"cooldown_seconds"`
+	EwmaAlpha       float64 `mapstructure:"ewma_alpha" yaml:"ewma_alpha"`
+	MinSamples      int     `mapstructure:"min_samples" yaml:"min_samples"`
+	Prefer          string  `mapstructure:"prefer" yaml:"prefer"`
+}
+
+type BackendInstance struct {
+	Name   string       `mapstructure:"name" yaml:"name"`
+	Type   string       `mapstructure:"type" yaml:"type"`
+	Vertex VertexConfig `mapstructure:"vertex" yaml:"vertex"`
+	OpenAI OpenAIConfig `mapstructure:"openai" yaml:"openai"`
 }
 
 type OpenAIConfig struct {
@@ -80,6 +99,11 @@ func Load(configPath string) (Config, error) {
 	v.SetDefault("server_host", "0.0.0.0")
 	v.SetDefault("server_port", 8080)
 	v.SetDefault("backend", "")
+	v.SetDefault("routing.policy", "ewma_ttft")
+	v.SetDefault("routing.cooldown_seconds", 15)
+	v.SetDefault("routing.ewma_alpha", 0.2)
+	v.SetDefault("routing.min_samples", 5)
+	v.SetDefault("routing.prefer", "")
 	v.SetDefault("openai.api_key_env", "OPENAI_API_KEY")
 	v.SetDefault("openai.base_url", "https://api.openai.com/v1")
 	v.SetDefault("openai.model", "gpt-4o-mini")
@@ -99,9 +123,47 @@ func Load(configPath string) (Config, error) {
 		return Config{}, fmt.Errorf("unmarshal config: %w", err)
 	}
 
+	cfg.Routing.EnabledSet = v.IsSet("routing.enabled")
+	cfg = synthesizeLegacyBackends(cfg)
+
 	if err := Validate(cfg); err != nil {
 		return Config{}, fmt.Errorf("validate config: %w", err)
 	}
 
 	return cfg, nil
+}
+
+func (c Config) EffectiveRoutingEnabled() bool {
+	if c.Routing.EnabledSet {
+		return c.Routing.Enabled
+	}
+
+	return len(c.Backends) >= 2
+}
+
+func synthesizeLegacyBackends(cfg Config) Config {
+	if len(cfg.Backends) > 0 {
+		return cfg
+	}
+
+	switch {
+	case cfg.Backend == "openai":
+		cfg.Backends = []BackendInstance{
+			{
+				Name:   "openai-default",
+				Type:   "openai",
+				OpenAI: cfg.OpenAI,
+			},
+		}
+	case cfg.Backend == "vertex" || cfg.Vertex.IsConfigured():
+		cfg.Backends = []BackendInstance{
+			{
+				Name:   "vertex-default",
+				Type:   "vertex",
+				Vertex: cfg.Vertex,
+			},
+		}
+	}
+
+	return cfg
 }

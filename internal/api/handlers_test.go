@@ -14,7 +14,7 @@ func TestHealthAndReadyHandlers(t *testing.T) {
 	cfg := &config.Config{}
 	logger := telemetry.NewJSONStdoutLogger()
 	collector := metrics.New()
-	s := NewServer(cfg, logger, collector, nil, nil)
+	s := NewServer(cfg, logger, collector, nil)
 
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
