@@ -13,8 +13,10 @@ import (
 	"github.com/myusername/cloudinfer/internal/api"
 	openaibackend "github.com/myusername/cloudinfer/internal/backends/openai"
 	"github.com/myusername/cloudinfer/internal/backends/vertex"
+	"github.com/myusername/cloudinfer/internal/backends/wrap"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/metrics"
+	"github.com/myusername/cloudinfer/internal/routing"
 	"github.com/myusername/cloudinfer/internal/telemetry"
 )
 
@@ -34,33 +36,62 @@ func main() {
 	collector := metrics.New()
 	logger := telemetry.NewJSONStdoutLogger()
 
-	var vertexAdapter *vertex.VertexAdapter
-	if cfg.Backend == "vertex" {
-		vertexAdapter, err = vertex.NewAdapter(context.Background(), cfg.Vertex)
-		if err != nil {
-			log.Fatalf("initialize vertex adapter: %v", err)
-		}
-		defer func() {
-			if err := vertexAdapter.Close(); err != nil {
-				log.Printf("close vertex adapter: %v", err)
+	routingBackends := make([]routing.Backend, 0, len(cfg.Backends))
+	for _, backendCfg := range cfg.Backends {
+		switch backendCfg.Type {
+		case "vertex":
+			vertexAdapter, initErr := vertex.NewAdapter(context.Background(), backendCfg.Vertex)
+			if initErr != nil {
+				log.Fatalf("initialize vertex adapter %q: %v", backendCfg.Name, initErr)
 			}
-		}()
+			streamer := wrap.NewVertexStreamer(backendCfg.Name, backendCfg.Vertex.Model, vertexAdapter)
+			routingBackends = append(routingBackends, routing.Backend{
+				Name:   backendCfg.Name,
+				Type:   backendCfg.Type,
+				Client: streamer,
+			})
+			defer func(name string, client routing.Streamer) {
+				if err := client.Close(); err != nil {
+					log.Printf("close backend %s: %v", name, err)
+				}
+			}(backendCfg.Name, streamer)
+		case "openai":
+			openAIAdapter, initErr := openaibackend.New(backendCfg.OpenAI)
+			if initErr != nil {
+				log.Fatalf("initialize openai-compatible adapter %q: %v", backendCfg.Name, initErr)
+			}
+			streamer := wrap.NewOpenAIStreamer(backendCfg.Name, openAIAdapter)
+			routingBackends = append(routingBackends, routing.Backend{
+				Name:   backendCfg.Name,
+				Type:   backendCfg.Type,
+				Client: streamer,
+			})
+			defer func(name string, client routing.Streamer) {
+				if err := client.Close(); err != nil {
+					log.Printf("close backend %s: %v", name, err)
+				}
+			}(backendCfg.Name, streamer)
+		}
 	}
 
-	var openAIAdapter *openaibackend.Adapter
-	if cfg.Backend == "openai" {
-		openAIAdapter, err = openaibackend.New(cfg.OpenAI)
-		if err != nil {
-			log.Fatalf("initialize openai-compatible adapter: %v", err)
-		}
-		defer func() {
-			if err := openAIAdapter.Close(); err != nil {
-				log.Printf("close openai-compatible adapter: %v", err)
-			}
-		}()
+	var router *routing.Router
+	if len(routingBackends) > 0 {
+		effectiveRoutingEnabled := cfg.EffectiveRoutingEnabled()
+		stats := routing.NewStatsStore(
+			cfg.Routing.EwmaAlpha,
+			time.Duration(cfg.Routing.CooldownSeconds)*time.Second,
+		)
+		router = routing.NewRouter(routingBackends, stats, routing.PolicyConfig{
+			Enabled:         effectiveRoutingEnabled,
+			Policy:          cfg.Routing.Policy,
+			CooldownSeconds: cfg.Routing.CooldownSeconds,
+			EwmaAlpha:       cfg.Routing.EwmaAlpha,
+			MinSamples:      int64(cfg.Routing.MinSamples),
+			Prefer:          cfg.Routing.Prefer,
+		})
 	}
 
-	api.NewServer(&cfg, logger, collector, vertexAdapter, openAIAdapter).RegisterRoutes(mux)
+	api.NewServer(&cfg, logger, collector, router).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
