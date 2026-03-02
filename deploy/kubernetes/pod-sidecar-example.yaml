@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-with-cloudinfer
+spec:
+  terminationGracePeriodSeconds: 30
+  containers:
+    - name: app
+      image: ghcr.io/example/your-app:latest
+      env:
+        - name: OPENAI_BASE_URL
+          value: http://127.0.0.1:8080/v1
+      ports:
+        - name: http
+          containerPort: 3000
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+
+    - name: cloudinfer
+      image: ghcr.io/example/cloudinfer:latest
+      args:
+        - -config
+        - /etc/cloudinfer/router.yaml
+      env:
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: cloudinfer-secrets
+              key: OPENAI_API_KEY
+      ports:
+        - name: cloudinfer
+          containerPort: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+          host: 127.0.0.1
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+          host: 127.0.0.1
+        initialDelaySeconds: 3
+        periodSeconds: 5
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
+      volumeMounts:
+        - name: cloudinfer-config
+          mountPath: /etc/cloudinfer
+          readOnly: true
+  volumes:
+    - name: cloudinfer-config
+      configMap:
+        name: cloudinfer-config

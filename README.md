@@ -72,6 +72,19 @@ curl -N http://localhost:8080/v1/chat/completions \
 
 ---
 
+## Sidecar Mode
+
+CloudInfer can run as a telemetry-driven inference control plane sidecar in Kubernetes.
+
+See [docs/internal/SIDECAR.md](docs/internal/SIDECAR.md) for:
+
+- sidecar deployment guidance
+- reference Kubernetes manifests
+- readiness and shutdown behavior
+- metrics and debug endpoint usage
+
+---
+
 ## Vertex (ADC) Setup
 
 CloudInfer uses Application Default Credentials for Vertex AI. No API keys or
