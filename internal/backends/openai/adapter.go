@@ -145,55 +145,58 @@ func (a *Adapter) StreamText(ctx context.Context, modelName string, messages []M
 			return
 		}
 
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				if errors.Is(err, io.EOF) {
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		var (
+			eventData []string
+			sawDone   bool
+		)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if line == "" {
+				done, err := emitSSEEvent(ctx, tokenCh, eventData)
+				if err != nil {
+					sendTerminalError(errCh, err)
 					return
 				}
-				if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					sendTerminalError(errCh, ctx.Err())
+				if done {
+					sawDone = true
 					return
 				}
-				sendTerminalError(errCh, fmt.Errorf("provider_error: read stream: %w", err))
-				return
+				eventData = eventData[:0]
+				continue
 			}
 
-			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
+				continue
+			}
+
 			if !strings.HasPrefix(line, "data:") {
 				continue
 			}
 
-			payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if payload == "" {
-				continue
-			}
-			if payload == "[DONE]" {
-				return
-			}
+			eventData = append(eventData, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
 
-			var chunk streamChunk
-			if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-				sendTerminalError(errCh, fmt.Errorf("provider_error: decode stream chunk: %w", err))
-				return
-			}
-
-			if len(chunk.Choices) == 0 {
-				continue
-			}
-
-			content := chunk.Choices[0].Delta.Content
-			if content == "" {
-				continue
-			}
-
-			select {
-			case <-ctx.Done():
+		if err := scanner.Err(); err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				sendTerminalError(errCh, ctx.Err())
 				return
-			case tokenCh <- content:
 			}
+			sendTerminalError(errCh, fmt.Errorf("provider_error: read stream: %w", err))
+			return
+		}
+
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			sendTerminalError(errCh, ctx.Err())
+			return
+		}
+
+		if !sawDone {
+			sendTerminalError(errCh, errors.New("provider_error: unexpected EOF"))
 		}
 	}()
 
@@ -256,5 +259,37 @@ func sendTerminalError(errCh chan<- error, err error) {
 	select {
 	case errCh <- err:
 	default:
+	}
+}
+
+func emitSSEEvent(ctx context.Context, tokenCh chan<- string, eventData []string) (bool, error) {
+	if len(eventData) == 0 {
+		return false, nil
+	}
+
+	payload := strings.Join(eventData, "\n")
+	if payload == "[DONE]" {
+		return true, nil
+	}
+
+	var chunk streamChunk
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		return false, fmt.Errorf("provider_error: decode stream chunk: %w", err)
+	}
+
+	if len(chunk.Choices) == 0 {
+		return false, nil
+	}
+
+	content := chunk.Choices[0].Delta.Content
+	if content == "" {
+		return false, nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case tokenCh <- content:
+		return false, nil
 	}
 }

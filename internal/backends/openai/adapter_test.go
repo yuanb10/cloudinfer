@@ -24,7 +24,10 @@ func TestAdapterStreamText(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n\n")
+		_, _ = io.WriteString(w, ": keep-alive\n")
+		_, _ = io.WriteString(w, "event: message\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}\n")
+		_, _ = io.WriteString(w, "data: ]}\n\n")
 		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
@@ -117,6 +120,29 @@ func TestAdapterNon200ReturnsProviderError(t *testing.T) {
 	tokenCh, errCh := adapter.StreamText(context.Background(), "", []Message{{Role: "user", Content: "hello"}})
 	if got := collectTokensUntilError(t, tokenCh, errCh); !strings.Contains(got, "provider_error: status=502") {
 		t.Fatalf("error = %q, want provider_error status", got)
+	}
+}
+
+func TestAdapterUnexpectedEOFReturnsProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\n\n")
+	}))
+	defer server.Close()
+
+	t.Setenv("OPENAI_API_KEY", "dummy")
+
+	adapter, err := New(config.OpenAIConfig{
+		APIKeyEnv: "OPENAI_API_KEY",
+		BaseURL:   server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+
+	tokenCh, errCh := adapter.StreamText(context.Background(), "", []Message{{Role: "user", Content: "hello"}})
+	if got := collectTokensUntilError(t, tokenCh, errCh); !strings.Contains(got, "provider_error: unexpected EOF") {
+		t.Fatalf("error = %q, want unexpected EOF", got)
 	}
 }
 
