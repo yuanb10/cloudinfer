@@ -35,16 +35,31 @@ func main() {
 	mux := http.NewServeMux()
 	collector := metrics.New()
 	logger := telemetry.NewJSONStdoutLogger()
+	runtime := api.RuntimeState{
+		RoutingEnabled: cfg.EffectiveRoutingEnabled(),
+		Backends:       make([]api.BackendStatus, 0, len(cfg.Backends)),
+	}
 
 	routingBackends := make([]routing.Backend, 0, len(cfg.Backends))
 	for _, backendCfg := range cfg.Backends {
+		backendStatus := api.BackendStatus{
+			Name: backendCfg.Name,
+			Type: backendCfg.Type,
+		}
+
 		switch backendCfg.Type {
 		case "vertex":
+			backendStatus.DefaultModel = backendCfg.Vertex.Model
 			vertexAdapter, initErr := vertex.NewAdapter(context.Background(), backendCfg.Vertex)
 			if initErr != nil {
-				log.Fatalf("initialize vertex adapter %q: %v", backendCfg.Name, initErr)
+				backendStatus.InitError = initErr.Error()
+				runtime.Backends = append(runtime.Backends, backendStatus)
+				log.Printf("initialize vertex adapter %q: %v", backendCfg.Name, initErr)
+				continue
 			}
 			streamer := wrap.NewVertexStreamer(backendCfg.Name, backendCfg.Vertex.Model, vertexAdapter)
+			backendStatus.Initialized = true
+			runtime.Backends = append(runtime.Backends, backendStatus)
 			routingBackends = append(routingBackends, routing.Backend{
 				Name:   backendCfg.Name,
 				Type:   backendCfg.Type,
@@ -56,11 +71,17 @@ func main() {
 				}
 			}(backendCfg.Name, streamer)
 		case "openai":
+			backendStatus.DefaultModel = backendCfg.OpenAI.Model
 			openAIAdapter, initErr := openaibackend.New(backendCfg.OpenAI)
 			if initErr != nil {
-				log.Fatalf("initialize openai-compatible adapter %q: %v", backendCfg.Name, initErr)
+				backendStatus.InitError = initErr.Error()
+				runtime.Backends = append(runtime.Backends, backendStatus)
+				log.Printf("initialize openai-compatible adapter %q: %v", backendCfg.Name, initErr)
+				continue
 			}
 			streamer := wrap.NewOpenAIStreamer(backendCfg.Name, openAIAdapter)
+			backendStatus.Initialized = true
+			runtime.Backends = append(runtime.Backends, backendStatus)
 			routingBackends = append(routingBackends, routing.Backend{
 				Name:   backendCfg.Name,
 				Type:   backendCfg.Type,
@@ -91,12 +112,14 @@ func main() {
 		})
 	}
 
-	api.NewServer(&cfg, logger, collector, router).RegisterRoutes(mux)
+	api.NewServer(&cfg, logger, collector, router, runtime).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -115,13 +138,17 @@ func main() {
 		}
 		log.Printf("server stopped")
 	case <-ctx.Done():
-		log.Printf("shutdown signal received, shutting down server")
+		gracePeriod := cfg.ShutdownGracePeriod()
+		log.Printf("shutdown signal received, shutting down server with grace period=%s", gracePeriod)
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Fatalf("shutdown failed: %v", err)
+			log.Printf("graceful shutdown did not complete cleanly: %v", err)
+			if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				log.Printf("force close failed: %v", closeErr)
+			}
 		}
 
 		log.Printf("server shutdown completed")

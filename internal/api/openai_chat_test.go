@@ -204,9 +204,16 @@ func newTestHTTPServer(t *testing.T) *httptest.Server {
 	logger := noopLogger{}
 	collector := metrics.New()
 	router := newTestRouter(true)
+	runtime := RuntimeState{
+		RoutingEnabled: true,
+		Backends: []BackendStatus{
+			{Name: "alpha", Type: "openai", DefaultModel: "alpha-model", Initialized: true},
+			{Name: "beta", Type: "vertex", DefaultModel: "beta-model", Initialized: true},
+		},
+	}
 
 	mux := http.NewServeMux()
-	NewServer(cfg, logger, collector, router).RegisterRoutes(mux)
+	NewServer(cfg, logger, collector, router, runtime).RegisterRoutes(mux)
 
 	return httptest.NewServer(mux)
 }
@@ -218,9 +225,16 @@ func newDisabledRoutingTestHTTPServer(t *testing.T) (*httptest.Server, *routing.
 	logger := noopLogger{}
 	collector := metrics.New()
 	router := newTestRouter(false)
+	runtime := RuntimeState{
+		RoutingEnabled: false,
+		Backends: []BackendStatus{
+			{Name: "alpha", Type: "openai", DefaultModel: "alpha-model", Initialized: true},
+			{Name: "beta", Type: "vertex", DefaultModel: "beta-model", Initialized: true},
+		},
+	}
 
 	mux := http.NewServeMux()
-	NewServer(cfg, logger, collector, router).RegisterRoutes(mux)
+	NewServer(cfg, logger, collector, router, runtime).RegisterRoutes(mux)
 
 	return httptest.NewServer(mux), router
 }

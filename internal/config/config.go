@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -17,8 +18,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host string `mapstructure:"server_host" validate:"required,hostname|ip"`
-	Port int    `mapstructure:"server_port" validate:"required,min=1,max=65535"`
+	Host                 string `mapstructure:"server_host" validate:"required,hostname|ip"`
+	Port                 int    `mapstructure:"server_port" validate:"required,min=1,max=65535"`
+	ShutdownGraceSeconds int    `mapstructure:"server_shutdown_grace_seconds" validate:"required,min=1,max=600"`
 }
 
 type VertexConfig struct {
@@ -54,6 +56,10 @@ type OpenAIConfig struct {
 
 func (c ServerConfig) Address() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+func (c ServerConfig) ShutdownGracePeriod() time.Duration {
+	return time.Duration(c.ShutdownGraceSeconds) * time.Second
 }
 
 func (c VertexConfig) IsConfigured() bool {
@@ -98,6 +104,7 @@ func Load(configPath string) (Config, error) {
 
 	v.SetDefault("server_host", "0.0.0.0")
 	v.SetDefault("server_port", 8080)
+	v.SetDefault("server_shutdown_grace_seconds", 20)
 	v.SetDefault("backend", "")
 	v.SetDefault("routing.policy", "ewma_ttft")
 	v.SetDefault("routing.cooldown_seconds", 15)

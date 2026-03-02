@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudinfer-config
+data:
+  router.yaml: |
+    server_host: 127.0.0.1
+    server_port: 8080
+    server_shutdown_grace_seconds: 20
+
+    routing:
+      enabled: true
+      policy: ewma_ttft
+      cooldown_seconds: 15
+      ewma_alpha: 0.2
+      min_samples: 5
+      prefer: openai-primary
+
+    backends:
+      - name: openai-primary
+        type: openai
+        openai:
+          api_key_env: OPENAI_API_KEY
+          base_url: https://api.openai.com/v1
+          model: gpt-4o-mini
+          timeout_seconds: 60
+
+      - name: vertex-fallback
+        type: vertex
+        vertex:
+          project: your-gcp-project-id
+          location: us-central1
+          model: gemini-2.0-flash-lite-001
