@@ -147,12 +147,31 @@ func main() {
 	case <-ctx.Done():
 		gracePeriod := cfg.ShutdownGracePeriod()
 		drainDeadline := time.Now().Add(gracePeriod)
+		drainStart := time.Now()
 		log.Printf("DRAINING_START: shutdown signal received, initiating drain with grace period=%s", gracePeriod)
 
 		runtime.StartDrain()
 		drainState.StartDrain(drainDeadline)
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
+		drainWaitCtx, drainCancel := context.WithDeadline(context.Background(), drainDeadline)
+		drained := drainState.Wait(drainWaitCtx)
+		drainCancel()
+		if drained {
+			log.Printf("DRAINING_DONE: all streams completed")
+		} else {
+			log.Printf("SHUTDOWN_FORCED: drain deadline reached with %d streams still active", drainState.InFlight())
+		}
+
+		minDrainWindow := 1 * time.Second
+		if remaining := time.Until(drainStart.Add(minDrainWindow)); remaining > 0 {
+			time.Sleep(remaining)
+		}
+
+		shutdownTimeout := 5 * time.Second
+		if remaining := time.Until(drainDeadline); remaining > 0 && remaining < shutdownTimeout {
+			shutdownTimeout = remaining
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
@@ -162,11 +181,6 @@ func main() {
 			}
 		}
 
-		log.Printf("DRAINING_DONE: server shutdown completed")
-		drainWaitCtx, drainCancel := context.WithDeadline(context.Background(), drainDeadline)
-		defer drainCancel()
-		if !drainState.Wait(drainWaitCtx) {
-			log.Printf("drain deadline reached with %d streams still active", drainState.InFlight())
-		}
+		log.Printf("server shutdown completed")
 	}
 }
