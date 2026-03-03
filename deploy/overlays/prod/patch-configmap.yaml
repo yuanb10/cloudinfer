@@ -6,7 +6,7 @@ data:
   router.yaml: |
     server_host: 127.0.0.1
     server_port: 8080
-    server_shutdown_grace_seconds: 60
+    server_shutdown_grace_seconds: 90
 
     routing:
       enabled: true

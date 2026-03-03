@@ -6,7 +6,7 @@ spec:
   replicas: 3
   template:
     spec:
-      terminationGracePeriodSeconds: 90
+      terminationGracePeriodSeconds: 100
       tolerations:
         - key: dedicated
           operator: Equal
