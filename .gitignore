@@ -8,3 +8,8 @@ router.yaml
 
 # Private docs
 docs/internal/
+
+# Codelab-generated artifacts
+codelab/*/cloudinfer
+codelab/*/server.log
+codelab/*/response.headers

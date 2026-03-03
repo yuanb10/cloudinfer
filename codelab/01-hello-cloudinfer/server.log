@@ -1,4 +1,0 @@
-2026/03/03 07:16:46 configuration loaded, server address=127.0.0.1:8080
-2026/03/03 07:16:46 READY: starting cloudinfer server on 127.0.0.1:8080
-2026/03/03 07:16:46 DRAINING_START: shutdown signal received, initiating drain with grace period=20s
-2026/03/03 07:16:46 DRAINING_DONE: all streams completed
