@@ -76,7 +76,7 @@ curl -N http://localhost:8080/v1/chat/completions \
 
 CloudInfer can run as a telemetry-driven inference control plane sidecar in Kubernetes.
 
-See [docs/internal/SIDECAR.md](docs/internal/SIDECAR.md) for:
+See [docs/SIDECAR.md](docs/SIDECAR.md) for:
 
 - sidecar deployment guidance
 - reference Kubernetes manifests
