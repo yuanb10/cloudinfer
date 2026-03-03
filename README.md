@@ -115,7 +115,8 @@ Safe debug endpoints:
 - `GET /debug/config` returns sanitized config with masked secret values
 - `GET /debug/routes` returns sanitized routing and backend state
 - Debug endpoints are localhost-only by default
-- Set `server_debug_expose: true` to allow remote access when you explicitly need it
+- Set `server_debug_expose: true` and `server_debug_auth_token_env: YOUR_ENV_VAR` to allow remote access when you explicitly need it
+- Remote callers must send `Authorization: Bearer <token>` or `X-CloudInfer-Debug-Token: <token>`
 
 ---
 

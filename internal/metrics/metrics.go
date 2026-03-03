@@ -170,6 +170,7 @@ func (c *Collector) Register(mux *http.ServeMux) {
 }
 
 func normalizeLabel(value string, fallback string) string {
+	value = sanitizeLabelValue(value)
 	if strings.TrimSpace(value) == "" {
 		return fallback
 	}

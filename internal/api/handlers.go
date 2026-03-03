@@ -1,9 +1,11 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/myusername/cloudinfer/internal/config"
@@ -46,17 +48,58 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 func (s *Server) guardDebugEndpoint(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.debugEndpointExposed() || isLoopbackRemoteAddr(r.RemoteAddr) {
+		if isLoopbackRemoteAddr(r.RemoteAddr) {
 			next(w, r)
 			return
 		}
 
-		http.Error(w, "debug endpoint is restricted to localhost", http.StatusForbidden)
+		if !s.debugEndpointExposed() {
+			http.Error(w, "debug endpoint is restricted to localhost", http.StatusForbidden)
+			return
+		}
+
+		if !s.debugAuthAllowed(r) {
+			http.Error(w, "debug endpoint requires configured authentication", http.StatusForbidden)
+			return
+		}
+
+		next(w, r)
 	}
 }
 
 func (s *Server) debugEndpointExposed() bool {
 	return s != nil && s.cfg != nil && s.cfg.DebugExpose
+}
+
+func (s *Server) debugAuthAllowed(r *http.Request) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+
+	envName := strings.TrimSpace(s.cfg.DebugAuthTokenEnv)
+	if envName == "" {
+		return false
+	}
+
+	expected := os.Getenv(envName)
+	if expected == "" {
+		return false
+	}
+
+	candidates := []string{
+		strings.TrimSpace(r.Header.Get("X-CloudInfer-Debug-Token")),
+		strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(expected)) == 1 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {

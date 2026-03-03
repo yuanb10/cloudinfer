@@ -231,6 +231,34 @@ func TestDebugEndpointsRejectNonLoopbackByDefault(t *testing.T) {
 }
 
 func TestDebugEndpointsAllowRemoteWhenExposed(t *testing.T) {
+	t.Setenv("CLOUDINFER_DEBUG_TOKEN", "debug-secret")
+
+	cfg := &config.Config{
+		ServerConfig: config.ServerConfig{
+			DebugExpose:       true,
+			DebugAuthTokenEnv: "CLOUDINFER_DEBUG_TOKEN",
+		},
+	}
+	logger := telemetry.NewJSONStdoutLogger()
+	collector := metrics.New()
+	runtime := readyRuntime()
+	s := NewServer(cfg, logger, collector, nil, runtime, nil)
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/routes", nil)
+	req.RemoteAddr = "203.0.113.10:4444"
+	req.Header.Set("Authorization", "Bearer debug-secret")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestDebugEndpointsRejectRemoteWhenExposedWithoutAuthConfig(t *testing.T) {
 	cfg := &config.Config{
 		ServerConfig: config.ServerConfig{
 			DebugExpose: true,
@@ -249,8 +277,8 @@ func TestDebugEndpointsAllowRemoteWhenExposed(t *testing.T) {
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 }
 

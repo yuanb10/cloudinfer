@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -36,6 +37,12 @@ var allowedMetricLabels = map[string]map[string]struct{}{
 	},
 	"cloudinfer_draining": {},
 }
+
+var (
+	uuidPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
+	emailPattern = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
+	tokenPattern = regexp.MustCompile(`(?i)\b(sk-[A-Z0-9]{8,}|bearer\s+[A-Z0-9._\-]{8,}|eyJ[A-Z0-9._\-]{10,})\b`)
+)
 
 func AllowedMetricLabels() map[string][]string {
 	out := make(map[string][]string, len(allowedMetricLabels))
@@ -120,4 +127,22 @@ func ForbiddenLabels(metricName string, labels ...string) []string {
 
 	slices.Sort(forbidden)
 	return forbidden
+}
+
+func sanitizeLabelValue(value string) string {
+	value = strings.TrimSpace(value)
+	switch {
+	case value == "":
+		return ""
+	case len(value) > 64:
+		return "redacted"
+	case uuidPattern.MatchString(value):
+		return "redacted"
+	case emailPattern.MatchString(value):
+		return "redacted"
+	case tokenPattern.MatchString(value):
+		return "redacted"
+	default:
+		return value
+	}
 }

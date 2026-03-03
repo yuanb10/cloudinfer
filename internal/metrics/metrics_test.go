@@ -88,6 +88,29 @@ func TestValidateMetricFamilyRejectsForbiddenLabels(t *testing.T) {
 	}
 }
 
+func TestCollectorRedactsSensitiveLabelValues(t *testing.T) {
+	collector := NewWithOptions(Options{DevMode: true})
+	collector.ObserveChatCompletion("/v1/chat/completions", "alpha", "user@example.com", "ok", 25*time.Millisecond, 150*time.Millisecond, true)
+
+	families, err := collector.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+
+	for _, family := range families {
+		if family.GetName() != "cloudinfer_ttft_seconds" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "model" && label.GetValue() != "redacted" {
+					t.Fatalf("model label = %q, want %q", label.GetValue(), "redacted")
+				}
+			}
+		}
+	}
+}
+
 func stringPtr(value string) *string {
 	return &value
 }

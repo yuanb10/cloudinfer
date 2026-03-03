@@ -38,6 +38,10 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("openai backend requires openai.api_key_env")
 	}
 
+	if cfg.DebugExpose && strings.TrimSpace(cfg.DebugAuthTokenEnv) == "" {
+		return fmt.Errorf("server_debug_expose requires server_debug_auth_token_env")
+	}
+
 	if cfg.EffectiveRoutingEnabled() && len(cfg.Backends) < 2 {
 		return fmt.Errorf("routing.enabled requires at least 2 backend instances")
 	}
