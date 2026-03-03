@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -110,6 +111,42 @@ type parsedSSEEvent struct {
 	Data string
 }
 
+type cancelAwareStreamer struct {
+	started  chan struct{}
+	canceled chan struct{}
+	done     chan struct{}
+}
+
+func (s *cancelAwareStreamer) Name() string {
+	return "cancel-aware"
+}
+
+func (s *cancelAwareStreamer) StreamText(ctx context.Context, _ string, _ []routing.Message) (<-chan string, <-chan error) {
+	tokenCh := make(chan string)
+	errCh := make(chan error)
+
+	go func() {
+		defer close(s.done)
+		defer close(tokenCh)
+		defer close(errCh)
+		close(s.started)
+
+		<-ctx.Done()
+		close(s.canceled)
+		time.Sleep(25 * time.Millisecond)
+	}()
+
+	return tokenCh, errCh
+}
+
+func (s *cancelAwareStreamer) ResolvedModel(string) string {
+	return "cancel-model"
+}
+
+func (s *cancelAwareStreamer) Close() error {
+	return nil
+}
+
 func TestParseResponsesRequestAcceptsTextParts(t *testing.T) {
 	req, err := parseResponsesRequest(strings.NewReader(`{
 		"model":"gpt-4.1-mini",
@@ -144,6 +181,60 @@ func TestParseResponsesRequestRejectsUnsupportedField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unsupported field "tools"`) {
 		t.Fatalf("error = %q, want unsupported field message", err.Error())
+	}
+}
+
+func TestResponsesNonStreamReturnsResponseObject(t *testing.T) {
+	server := newTestHTTPServer(t)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{
+		"model":"default",
+		"input":[{"role":"user","content":"Say hello"}]
+	}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("X-Request-Id"); got == "" {
+		t.Fatal("x-request-id header is empty")
+	}
+
+	var body openaitypes.Response
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if body.Object != "response" {
+		t.Fatalf("object = %q, want %q", body.Object, "response")
+	}
+	if body.Status != "completed" {
+		t.Fatalf("status = %q, want %q", body.Status, "completed")
+	}
+	if body.OutputText != "hello" {
+		t.Fatalf("output_text = %q, want %q", body.OutputText, "hello")
+	}
+	if len(body.Output) != 1 {
+		t.Fatalf("output length = %d, want 1", len(body.Output))
+	}
+	if got := body.Output[0].Role; got != "assistant" {
+		t.Fatalf("output[0].role = %q, want %q", got, "assistant")
+	}
+	if len(body.Output[0].Content) != 1 {
+		t.Fatalf("output[0].content length = %d, want 1", len(body.Output[0].Content))
+	}
+	if got := body.Output[0].Content[0].Text; got != "hello" {
+		t.Fatalf("output[0].content[0].text = %q, want %q", got, "hello")
 	}
 }
 
@@ -214,6 +305,21 @@ func TestResponsesStreamConformance(t *testing.T) {
 		}
 	}
 
+	var firstDelta openaitypes.ResponseOutputTextDeltaEvent
+	if err := json.Unmarshal([]byte(events[1].Data), &firstDelta); err != nil {
+		t.Fatalf("unmarshal first delta: %v", err)
+	}
+	var secondDelta openaitypes.ResponseOutputTextDeltaEvent
+	if err := json.Unmarshal([]byte(events[2].Data), &secondDelta); err != nil {
+		t.Fatalf("unmarshal second delta: %v", err)
+	}
+	if firstDelta.SequenceNumber < 0 {
+		t.Fatalf("first delta sequence_number = %d, want non-negative", firstDelta.SequenceNumber)
+	}
+	if secondDelta.SequenceNumber <= firstDelta.SequenceNumber {
+		t.Fatalf("second delta sequence_number = %d, want greater than %d", secondDelta.SequenceNumber, firstDelta.SequenceNumber)
+	}
+
 	var completed openaitypes.ResponseCompletedEvent
 	if err := json.Unmarshal([]byte(events[len(events)-1].Data), &completed); err != nil {
 		t.Fatalf("unmarshal completed event: %v", err)
@@ -259,6 +365,17 @@ func TestResponsesStreamEmitsErrorEventOnUpstreamFailure(t *testing.T) {
 	}
 	if events[2].Name != "error" {
 		t.Fatalf("final event = %q, want %q", events[2].Name, "error")
+	}
+
+	var errEvent openaitypes.ErrorEvent
+	if err := json.Unmarshal([]byte(events[2].Data), &errEvent); err != nil {
+		t.Fatalf("unmarshal error event: %v", err)
+	}
+	if errEvent.Error.Message != "upstream stream failed" {
+		t.Fatalf("error message = %q, want %q", errEvent.Error.Message, "upstream stream failed")
+	}
+	if errEvent.Error.Type != "server_error" {
+		t.Fatalf("error type = %q, want %q", errEvent.Error.Type, "server_error")
 	}
 }
 
@@ -322,6 +439,107 @@ func TestResponsesStreamTTFTMatchesFirstDeltaTiming(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamClientDisconnectCancelsUpstream(t *testing.T) {
+	streamer := &cancelAwareStreamer{
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	server := newCancelableResponsesServer(t, streamer)
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{
+		"model":"default",
+		"stream":true,
+		"input":[{"role":"user","content":"hi"}]
+	}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+
+	select {
+	case <-streamer.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("streamer did not start")
+	}
+
+	buf := make([]byte, 1)
+	if _, err := resp.Body.Read(buf); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("read initial response byte: %v", err)
+	}
+
+	cancel()
+	_ = resp.Body.Close()
+
+	select {
+	case <-streamer.canceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("upstream context was not canceled after client disconnect")
+	}
+
+	select {
+	case <-streamer.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("streamer goroutine did not exit after client disconnect")
+	}
+}
+
+func TestResponsesPerformanceSmoke(t *testing.T) {
+	mux := http.NewServeMux()
+	NewServer(&config.Config{}, noopLogger{}, metrics.New(), nil, readyRuntime(), nil).RegisterRoutes(mux)
+	body := `{"model":"default","input":[{"role":"user","content":"hi"}]}`
+
+	const (
+		requestCount = 200
+		maxDuration  = 500 * time.Millisecond
+		maxAllocs    = 250.0
+	)
+
+	allocs := testing.AllocsPerRun(25, func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		res := rr.Result()
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			panic("unexpected status " + strconv.Itoa(res.StatusCode))
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+	})
+	if allocs > maxAllocs {
+		t.Fatalf("allocs/request = %.1f, want <= %.1f", allocs, maxAllocs)
+	}
+
+	start := time.Now()
+	for i := 0; i < requestCount; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		res := rr.Result()
+		if res.StatusCode != http.StatusOK {
+			res.Body.Close()
+			t.Fatalf("request %d status = %d, want %d", i, res.StatusCode, http.StatusOK)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+	}
+	elapsed := time.Since(start)
+	if elapsed > maxDuration {
+		t.Fatalf("%d requests took %s, want <= %s", requestCount, elapsed, maxDuration)
+	}
+
+	t.Logf("performance smoke: %d requests in %s, allocs/request=%.1f", requestCount, elapsed, allocs)
+}
+
 func newScriptedResponsesServer(t *testing.T, streamer scriptedStreamer, logger telemetry.Logger) *httptest.Server {
 	t.Helper()
 
@@ -346,6 +564,30 @@ func newScriptedResponsesServer(t *testing.T, streamer scriptedStreamer, logger 
 
 	mux := http.NewServeMux()
 	NewServer(cfg, logger, collector, router, runtime, nil).RegisterRoutes(mux)
+
+	return httptest.NewServer(mux)
+}
+
+func newCancelableResponsesServer(t *testing.T, streamer routing.Streamer) *httptest.Server {
+	t.Helper()
+
+	router := routing.NewRouter(
+		[]routing.Backend{
+			{Name: "alpha", Type: "openai", Client: streamer},
+		},
+		routing.NewStatsStore(0.2, 15*time.Second),
+		routing.PolicyConfig{Enabled: true, Policy: "ewma_ttft", MinSamples: 1, Prefer: "alpha"},
+	)
+
+	cfg := &config.Config{}
+	collector := metrics.New()
+	runtime := NewRuntimeState(true, []BackendStatus{
+		{Name: "alpha", Type: "openai", DefaultModel: streamer.ResolvedModel("default"), Initialized: true},
+	})
+	runtime.SetListenerReady()
+
+	mux := http.NewServeMux()
+	NewServer(cfg, noopLogger{}, collector, router, runtime, nil).RegisterRoutes(mux)
 
 	return httptest.NewServer(mux)
 }
