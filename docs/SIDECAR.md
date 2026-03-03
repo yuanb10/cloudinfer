@@ -13,11 +13,20 @@ In sidecar mode, CloudInfer runs in the same Kubernetes pod as your application 
 
 ## Kubernetes Layout
 
-Reference manifests live in:
+Reference manifests live in `deploy/base`, with overlays in `deploy/overlays/{dev,prod}`.
 
-- [configmap.yaml](../deploy/kubernetes/configmap.yaml)
-- [secret.yaml](../deploy/kubernetes/secret.yaml)
-- [pod-sidecar-example.yaml](../deploy/kubernetes/pod-sidecar-example.yaml)
+Canonical install path:
+
+```bash
+kubectl apply -k deploy/overlays/dev/
+```
+
+Base manifests:
+
+- [configmap.yaml](../deploy/base/configmap.yaml)
+- [secret.yaml](../deploy/base/secret.yaml)
+- [deployment.yaml](../deploy/base/deployment.yaml)
+- [pod-sidecar-example.yaml](../deploy/base/pod-sidecar-example.yaml)
 
 The sidecar example mounts `router.yaml` from a ConfigMap, injects `OPENAI_API_KEY` from a Secret, and configures:
 
