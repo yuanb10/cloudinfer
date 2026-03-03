@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/lifecycle"
@@ -35,11 +37,26 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("GET /healthz", s.healthHandler)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
-	mux.HandleFunc("GET /debug/routes", s.debugRoutesHandler)
-	mux.HandleFunc("GET /debug/config", s.debugConfigHandler)
+	mux.HandleFunc("GET /debug/routes", s.guardDebugEndpoint(s.debugRoutesHandler))
+	mux.HandleFunc("GET /debug/config", s.guardDebugEndpoint(s.debugConfigHandler))
 	if s.metrics != nil {
 		s.metrics.Register(mux)
 	}
+}
+
+func (s *Server) guardDebugEndpoint(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.debugEndpointExposed() || isLoopbackRemoteAddr(r.RemoteAddr) {
+			next(w, r)
+			return
+		}
+
+		http.Error(w, "debug endpoint is restricted to localhost", http.StatusForbidden)
+	}
+}
+
+func (s *Server) debugEndpointExposed() bool {
+	return s != nil && s.cfg != nil && s.cfg.DebugExpose
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, _ *http.Request) {
@@ -68,6 +85,20 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	return json.NewEncoder(w).Encode(payload)
+}
+
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if host == "" {
+		return false
+	}
+
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 type readyResponse struct {

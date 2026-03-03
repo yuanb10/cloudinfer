@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/myusername/cloudinfer/internal/metrics"
 	"github.com/myusername/cloudinfer/internal/routing"
 	"github.com/myusername/cloudinfer/internal/telemetry"
+	"github.com/prometheus/common/expfmt"
 )
 
 type debugTestStreamer struct {
@@ -139,6 +141,7 @@ func TestDebugRoutesReturnsStatsAndNoSecrets(t *testing.T) {
 	server := newTestServer(t, router, runtime)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/routes", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
 	rr := httptest.NewRecorder()
 	server.ServeHTTP(rr, req)
 
@@ -192,6 +195,7 @@ func TestDebugConfigMasksHeaderValues(t *testing.T) {
 	s.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/config", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 
@@ -213,6 +217,127 @@ func TestDebugConfigMasksHeaderValues(t *testing.T) {
 	}
 }
 
+func TestDebugEndpointsRejectNonLoopbackByDefault(t *testing.T) {
+	server := newTestServer(t, nil, readyRuntime())
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/config", nil)
+	req.RemoteAddr = "203.0.113.10:4444"
+	rr := httptest.NewRecorder()
+	server.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+}
+
+func TestDebugEndpointsAllowRemoteWhenExposed(t *testing.T) {
+	cfg := &config.Config{
+		ServerConfig: config.ServerConfig{
+			DebugExpose: true,
+		},
+	}
+	logger := telemetry.NewJSONStdoutLogger()
+	collector := metrics.New()
+	runtime := readyRuntime()
+	s := NewServer(cfg, logger, collector, nil, runtime, nil)
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/routes", nil)
+	req.RemoteAddr = "203.0.113.10:4444"
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", rr.Code, http.StatusOK)
+	}
+}
+
+func TestDebugEndpointsDoNotEchoRequestPayload(t *testing.T) {
+	server := newTestServer(t, nil, readyRuntime())
+	payload := `{"messages":[{"role":"user","content":"top-secret"}],"temperature":0.9}`
+
+	for _, path := range []string{"/debug/config", "/debug/routes"} {
+		req := httptest.NewRequest(http.MethodGet, path, strings.NewReader(payload))
+		req.RemoteAddr = "127.0.0.1:1234"
+		rr := httptest.NewRecorder()
+		server.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status code = %d, want %d", path, rr.Code, http.StatusOK)
+		}
+		if strings.Contains(rr.Body.String(), "top-secret") {
+			t.Fatalf("%s response echoed request content", path)
+		}
+		if strings.Contains(rr.Body.String(), "\"messages\"") {
+			t.Fatalf("%s response echoed request payload fields", path)
+		}
+	}
+}
+
+func TestMetricsEndpointExposesRequiredMetricsAndNoForbiddenLabels(t *testing.T) {
+	httpServer := httptest.NewServer(newTestServer(t, nil, readyRuntime()))
+	defer httpServer.Close()
+
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/v1/chat/completions", strings.NewReader(`{"model":"mock-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		resp.Body.Close()
+		t.Fatalf("read streaming response: %v", err)
+	}
+	resp.Body.Close()
+
+	metricsResp, err := client.Get(httpServer.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("scrape metrics: %v", err)
+	}
+	defer metricsResp.Body.Close()
+
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status code = %d, want %d", metricsResp.StatusCode, http.StatusOK)
+	}
+	if got := metricsResp.Header.Get("Content-Type"); got != metrics.MetricsContentType {
+		t.Fatalf("metrics content-type = %q, want %q", got, metrics.MetricsContentType)
+	}
+
+	bodyBytes, err := io.ReadAll(metricsResp.Body)
+	if err != nil {
+		t.Fatalf("read metrics body: %v", err)
+	}
+	body := string(bodyBytes)
+	if !strings.Contains(body, "cloudinfer_ttft_seconds_bucket{") {
+		t.Fatal("metrics body is missing cloudinfer_ttft_seconds_bucket")
+	}
+	if !strings.Contains(body, "cloudinfer_stream_duration_seconds_bucket{") {
+		t.Fatal("metrics body is missing cloudinfer_stream_duration_seconds_bucket")
+	}
+	if !strings.Contains(body, "cloudinfer_requests_total{") {
+		t.Fatal("metrics body is missing cloudinfer_requests_total")
+	}
+	if !strings.Contains(body, "cloudinfer_draining ") {
+		t.Fatal("metrics body is missing cloudinfer_draining")
+	}
+
+	parser := expfmt.TextParser{}
+	families, err := parser.TextToMetricFamilies(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parse metrics exposition: %v", err)
+	}
+	if err := metrics.ValidateMetricMap(families); err != nil {
+		t.Fatalf("validate metrics labels: %v", err)
+	}
+}
+
 func newTestServer(t *testing.T, router *routing.Router, runtime *RuntimeState) *http.ServeMux {
 	t.Helper()
 
@@ -225,4 +350,10 @@ func newTestServer(t *testing.T, router *routing.Router, runtime *RuntimeState) 
 	s.RegisterRoutes(mux)
 
 	return mux
+}
+
+func readyRuntime() *RuntimeState {
+	runtime := NewRuntimeState(false, nil)
+	runtime.SetListenerReady()
+	return runtime
 }

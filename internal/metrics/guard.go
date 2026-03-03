@@ -1,0 +1,123 @@
+package metrics
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	dto "github.com/prometheus/client_model/go"
+)
+
+type requestLabels struct {
+	Endpoint string
+	Backend  string
+	Status   string
+}
+
+type latencyLabels struct {
+	Backend string
+	Model   string
+}
+
+var allowedMetricLabels = map[string]map[string]struct{}{
+	"cloudinfer_requests_total": {
+		"endpoint": {},
+		"backend":  {},
+		"status":   {},
+	},
+	"cloudinfer_ttft_seconds": {
+		"backend": {},
+		"model":   {},
+	},
+	"cloudinfer_stream_duration_seconds": {
+		"backend": {},
+		"model":   {},
+	},
+	"cloudinfer_draining": {},
+}
+
+func AllowedMetricLabels() map[string][]string {
+	out := make(map[string][]string, len(allowedMetricLabels))
+	for name, labels := range allowedMetricLabels {
+		keys := slices.Collect(maps.Keys(labels))
+		slices.Sort(keys)
+		out[name] = keys
+	}
+
+	return out
+}
+
+func ValidateMetricFamilies(families []*dto.MetricFamily) error {
+	for _, family := range families {
+		if family == nil || family.Name == nil {
+			continue
+		}
+
+		if err := ValidateMetricFamily(family); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ValidateMetricFamily(family *dto.MetricFamily) error {
+	if family == nil || family.Name == nil {
+		return nil
+	}
+
+	name := family.GetName()
+	allowed, ok := allowedMetricLabels[name]
+	if !ok {
+		return fmt.Errorf("metric %q is not part of the allowlist", name)
+	}
+
+	for _, metric := range family.Metric {
+		for _, label := range metric.Label {
+			labelName := label.GetName()
+			if _, ok := allowed[labelName]; !ok {
+				return fmt.Errorf("metric %q has forbidden label %q", name, labelName)
+			}
+		}
+	}
+
+	return nil
+}
+
+func ValidateMetricMap(families map[string]*dto.MetricFamily) error {
+	names := make([]string, 0, len(families))
+	for name := range families {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	for _, name := range names {
+		if err := ValidateMetricFamily(families[name]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ForbiddenLabels(metricName string, labels ...string) []string {
+	allowed, ok := allowedMetricLabels[metricName]
+	if !ok {
+		return append([]string(nil), labels...)
+	}
+
+	forbidden := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		if _, ok := allowed[label]; !ok {
+			forbidden = append(forbidden, label)
+		}
+	}
+
+	slices.Sort(forbidden)
+	return forbidden
+}

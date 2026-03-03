@@ -21,6 +21,7 @@ type ServerConfig struct {
 	Host                 string `mapstructure:"server_host" validate:"required,hostname|ip"`
 	Port                 int    `mapstructure:"server_port" validate:"required,min=1,max=65535"`
 	ShutdownGraceSeconds int    `mapstructure:"server_shutdown_grace_seconds" validate:"required,min=1,max=600"`
+	DebugExpose          bool   `mapstructure:"server_debug_expose" yaml:"server_debug_expose"`
 }
 
 type VertexConfig struct {
@@ -105,6 +106,7 @@ func Load(configPath string) (Config, error) {
 	v.SetDefault("server_host", "0.0.0.0")
 	v.SetDefault("server_port", 8080)
 	v.SetDefault("server_shutdown_grace_seconds", 20)
+	v.SetDefault("server_debug_expose", false)
 	v.SetDefault("backend", "")
 	v.SetDefault("routing.policy", "ewma_ttft")
 	v.SetDefault("routing.cooldown_seconds", 15)

@@ -152,6 +152,7 @@ func main() {
 
 		runtime.StartDrain()
 		drainState.StartDrain(drainDeadline)
+		collector.SetDraining(true)
 
 		drainWaitCtx, drainCancel := context.WithDeadline(context.Background(), drainDeadline)
 		drained := drainState.Wait(drainWaitCtx)

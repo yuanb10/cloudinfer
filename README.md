@@ -72,6 +72,53 @@ curl -N http://localhost:8080/v1/chat/completions \
 
 ---
 
+## Observability
+
+CloudInfer exposes Prometheus metrics at `GET /metrics` with the exact
+content type `text/plain; version=0.0.4`.
+
+Current metrics:
+
+- `cloudinfer_requests_total{endpoint,backend,status}`
+- `cloudinfer_ttft_seconds_bucket{backend,model}`
+- `cloudinfer_stream_duration_seconds_bucket{backend,model}`
+- `cloudinfer_draining`
+
+Label policy:
+
+- `endpoint` is the API route template (currently `/v1/chat/completions`)
+- `backend` is the selected backend name, or `mock` when no backend is used
+- `status` is the terminal request outcome (`ok`, `bad_request`, `draining`, `provider_error`, and similar terminal states)
+- `model` is the resolved response model
+- No other application labels are allowed on these metrics
+
+Useful PromQL examples:
+
+```promql
+sum by (backend, status) (rate(cloudinfer_requests_total[5m]))
+```
+
+```promql
+histogram_quantile(0.95, sum by (le, backend, model) (rate(cloudinfer_ttft_seconds_bucket[5m])))
+```
+
+```promql
+histogram_quantile(0.99, sum by (le, backend, model) (rate(cloudinfer_stream_duration_seconds_bucket[5m])))
+```
+
+```promql
+max(cloudinfer_draining)
+```
+
+Safe debug endpoints:
+
+- `GET /debug/config` returns sanitized config with masked secret values
+- `GET /debug/routes` returns sanitized routing and backend state
+- Debug endpoints are localhost-only by default
+- Set `server_debug_expose: true` to allow remote access when you explicitly need it
+
+---
+
 ## Kubernetes Deploy (v0.1.0-alpha)
 
 Apply the dev overlay (router-only Deployment + ConfigMap + ServiceAccount):

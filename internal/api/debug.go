@@ -42,6 +42,7 @@ type sanitizedConfig struct {
 	ServerHost              string                     `json:"server_host"`
 	ServerPort              int                        `json:"server_port"`
 	ServerShutdownGraceSecs int                        `json:"server_shutdown_grace_seconds"`
+	ServerDebugExpose       bool                       `json:"server_debug_expose"`
 	Backend                 string                     `json:"backend,omitempty"`
 	Routing                 sanitizedRoutingConfig     `json:"routing"`
 	Backends                []sanitizedBackendInstance `json:"backends,omitempty"`
@@ -122,6 +123,7 @@ func (s *Server) debugConfigHandler(w http.ResponseWriter, _ *http.Request) {
 		ServerHost:              s.cfg.Host,
 		ServerPort:              s.cfg.Port,
 		ServerShutdownGraceSecs: s.cfg.ShutdownGraceSeconds,
+		ServerDebugExpose:       s.cfg.DebugExpose,
 		Backend:                 s.cfg.Backend,
 		Routing:                 sanitizeRoutingConfig(s.cfg.Routing),
 		Backends:                backends,
