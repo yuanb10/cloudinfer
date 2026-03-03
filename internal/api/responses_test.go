@@ -439,6 +439,97 @@ func TestResponsesStreamTTFTMatchesFirstDeltaTiming(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamFallsBackBeforeFirstTokenOnTTFTTimeout(t *testing.T) {
+	router := routing.NewRouter(
+		[]routing.Backend{
+			{
+				Name: "alpha",
+				Type: "openai",
+				Client: scriptedStreamer{
+					name:             "alpha",
+					resolvedModel:    "slow-model",
+					tokens:           []string{"slow"},
+					delayBeforeFirst: 75 * time.Millisecond,
+				},
+			},
+			{
+				Name: "beta",
+				Type: "vertex",
+				Client: scriptedStreamer{
+					name:          "beta",
+					resolvedModel: "fast-model",
+					tokens:        []string{"fast"},
+				},
+			},
+		},
+		routing.NewStatsStore(0.2, 50*time.Millisecond).WithCooldownJitter(0, nil),
+		routing.PolicyConfig{Enabled: true, Policy: "ewma_ttft", MinSamples: 1, Prefer: "alpha"},
+	)
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			TTFTTimeoutMs:          20,
+			CooldownJitterFraction: 0,
+		},
+	}
+	runtime := NewRuntimeState(true, []BackendStatus{
+		{Name: "alpha", Type: "openai", DefaultModel: "slow-model", Initialized: true},
+		{Name: "beta", Type: "vertex", DefaultModel: "fast-model", Initialized: true},
+	})
+	runtime.SetListenerReady()
+
+	mux := http.NewServeMux()
+	NewServer(cfg, noopLogger{}, metrics.New(), router, runtime, nil).RegisterRoutes(mux)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{
+		"model":"default",
+		"stream":true,
+		"input":[{"role":"user","content":"Say hello"}]
+	}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("X-CloudInfer-Backend"); got != "beta" {
+		t.Fatalf("x-cloudinfer-backend = %q, want %q", got, "beta")
+	}
+	if got := resp.Header.Get("X-CloudInfer-Model"); got != "fast-model" {
+		t.Fatalf("x-cloudinfer-model = %q, want %q", got, "fast-model")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	bodyText := string(body)
+	if strings.Contains(bodyText, `"delta":"slow"`) {
+		t.Fatalf("stream body leaked slow backend output: %q", bodyText)
+	}
+	if !strings.Contains(bodyText, `"delta":"fast"`) {
+		t.Fatalf("stream body missing fast backend output: %q", bodyText)
+	}
+
+	snapshots := router.Snapshot()
+	if got := snapshots["alpha"].LastStatus; got != "timeout" {
+		t.Fatalf("alpha last_status = %q, want %q", got, "timeout")
+	}
+	if got := snapshots["beta"].LastStatus; got != "ok" {
+		t.Fatalf("beta last_status = %q, want %q", got, "ok")
+	}
+}
+
 func TestResponsesStreamClientDisconnectCancelsUpstream(t *testing.T) {
 	streamer := &cancelAwareStreamer{
 		started:  make(chan struct{}),

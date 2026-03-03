@@ -5,15 +5,16 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os/signal"
 	"syscall"
 	"time"
 
+	adapteropenai "github.com/myusername/cloudinfer/internal/adapters/openai"
+	adaptervertex "github.com/myusername/cloudinfer/internal/adapters/vertex"
 	"github.com/myusername/cloudinfer/internal/api"
-	openaibackend "github.com/myusername/cloudinfer/internal/backends/openai"
-	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/backends/wrap"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/lifecycle"
@@ -50,14 +51,14 @@ func main() {
 		switch backendCfg.Type {
 		case "vertex":
 			backendStatus.DefaultModel = backendCfg.Vertex.Model
-			vertexAdapter, initErr := vertex.NewAdapter(context.Background(), backendCfg.Vertex)
+			vertexAdapter, initErr := adaptervertex.New(context.Background(), backendCfg.Vertex)
 			if initErr != nil {
 				backendStatus.InitError = initErr.Error()
 				backendsStatus = append(backendsStatus, backendStatus)
 				log.Printf("initialize vertex adapter %q: %v", backendCfg.Name, initErr)
 				continue
 			}
-			streamer := wrap.NewVertexStreamer(backendCfg.Name, backendCfg.Vertex.Model, vertexAdapter)
+			streamer := wrap.NewAdapterStreamer(backendCfg.Name, backendCfg.Vertex.Model, vertexAdapter)
 			backendStatus.Initialized = true
 			backendsStatus = append(backendsStatus, backendStatus)
 			routingBackends = append(routingBackends, routing.Backend{
@@ -72,14 +73,14 @@ func main() {
 			}(backendCfg.Name, streamer)
 		case "openai":
 			backendStatus.DefaultModel = backendCfg.OpenAI.Model
-			openAIAdapter, initErr := openaibackend.New(backendCfg.OpenAI)
+			openAIAdapter, initErr := adapteropenai.New(backendCfg.OpenAI)
 			if initErr != nil {
 				backendStatus.InitError = initErr.Error()
 				backendsStatus = append(backendsStatus, backendStatus)
 				log.Printf("initialize openai-compatible adapter %q: %v", backendCfg.Name, initErr)
 				continue
 			}
-			streamer := wrap.NewOpenAIStreamer(backendCfg.Name, openAIAdapter)
+			streamer := wrap.NewAdapterStreamer(backendCfg.Name, backendCfg.OpenAI.Model, openAIAdapter)
 			backendStatus.Initialized = true
 			backendsStatus = append(backendsStatus, backendStatus)
 			routingBackends = append(routingBackends, routing.Backend{
@@ -101,7 +102,7 @@ func main() {
 		stats := routing.NewStatsStore(
 			cfg.Routing.EwmaAlpha,
 			time.Duration(cfg.Routing.CooldownSeconds)*time.Second,
-		)
+		).WithCooldownJitter(cfg.Routing.CooldownJitterFraction, rand.Float64)
 		router = routing.NewRouter(routingBackends, stats, routing.PolicyConfig{
 			Enabled:         effectiveRoutingEnabled,
 			Policy:          cfg.Routing.Policy,

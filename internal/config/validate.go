@@ -49,6 +49,12 @@ func Validate(cfg Config) error {
 	if cfg.EffectiveRoutingEnabled() && cfg.Routing.Policy != "ewma_ttft" {
 		return fmt.Errorf("routing.policy must be \"ewma_ttft\"")
 	}
+	if cfg.Routing.CooldownJitterFraction < 0 || cfg.Routing.CooldownJitterFraction > 1 {
+		return fmt.Errorf("routing.cooldown_jitter_fraction must be between 0 and 1")
+	}
+	if cfg.Routing.TTFTTimeoutMs < 0 {
+		return fmt.Errorf("routing.ttft_timeout_ms must be >= 0")
+	}
 
 	seen := make(map[string]struct{}, len(cfg.Backends))
 	for _, backend := range cfg.Backends {

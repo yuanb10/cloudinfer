@@ -1,15 +1,18 @@
 package routing
 
 import (
+	"math"
 	"sync"
 	"time"
 )
 
 type StatsStore struct {
-	mu       sync.RWMutex
-	stats    map[string]*Stats
-	alpha    float64
-	cooldown time.Duration
+	mu             sync.RWMutex
+	stats          map[string]*Stats
+	alpha          float64
+	cooldown       time.Duration
+	jitterFraction float64
+	jitterSource   func() float64
 }
 
 type Stats struct {
@@ -52,6 +55,28 @@ func NewStatsStore(alpha float64, cooldown time.Duration) *StatsStore {
 	}
 }
 
+func (s *StatsStore) WithCooldownJitter(fraction float64, source func() float64) *StatsStore {
+	if s == nil {
+		return nil
+	}
+
+	if fraction < 0 {
+		fraction = 0
+	}
+	if fraction > 1 {
+		fraction = 1
+	}
+	if source == nil {
+		source = func() float64 {
+			return 0.5
+		}
+	}
+
+	s.jitterFraction = fraction
+	s.jitterSource = source
+	return s
+}
+
 func (s *StatsStore) Get(name string) *Stats {
 	s.mu.RLock()
 	stat := s.stats[name]
@@ -72,11 +97,21 @@ func (s *StatsStore) Get(name string) *Stats {
 }
 
 func (s *StatsStore) Observe(name string, now time.Time, status string, ttftMs int64, providerError bool) {
+	s.ObserveWithCooldown(name, now, status, ttftMs, providerError, 0)
+}
+
+func (s *StatsStore) ObserveWithCooldown(name string, now time.Time, status string, ttftMs int64, providerError bool, cooldownOverride time.Duration) {
 	if s == nil {
 		return
 	}
 
-	s.Get(name).Observe(now, status, ttftMs, providerError, s.alpha, s.cooldown)
+	cooldown := cooldownOverride
+	if cooldown <= 0 {
+		cooldown = s.cooldown
+		cooldown = applyCooldownJitter(cooldown, s.jitterFraction, s.jitterSource)
+	}
+
+	s.Get(name).Observe(now, status, ttftMs, providerError, s.alpha, cooldown)
 }
 
 func (s *StatsStore) Snapshot(now time.Time) map[string]StatsSnapshot {
@@ -122,6 +157,32 @@ func (s *Stats) Observe(now time.Time, status string, ttftMs int64, providerErro
 		s.errors++
 		s.cooldownUntil = now.Add(cooldown)
 	}
+}
+
+func applyCooldownJitter(base time.Duration, fraction float64, source func() float64) time.Duration {
+	if base <= 0 || fraction <= 0 || source == nil {
+		return base
+	}
+
+	sample := source()
+	if sample < 0 {
+		sample = 0
+	}
+	if sample > 1 {
+		sample = 1
+	}
+
+	multiplier := 1 + ((sample*2)-1)*fraction
+	if multiplier < 0 {
+		multiplier = 0
+	}
+
+	jittered := time.Duration(math.Round(float64(base) * multiplier))
+	if jittered < 0 {
+		return 0
+	}
+
+	return jittered
 }
 
 func (s *Stats) Snapshot(now time.Time) StatsSnapshot {

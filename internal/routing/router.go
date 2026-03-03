@@ -192,11 +192,15 @@ func (r *Router) Choose(modelOverride string) Decision {
 }
 
 func (r *Router) Observe(backendName string, status string, ttftMs int64, providerError bool) {
+	r.ObserveWithCooldown(backendName, status, ttftMs, providerError, 0)
+}
+
+func (r *Router) ObserveWithCooldown(backendName string, status string, ttftMs int64, providerError bool, cooldownOverride time.Duration) {
 	if r == nil || r.stats == nil || backendName == "" {
 		return
 	}
 
-	r.stats.Observe(backendName, time.Now(), status, ttftMs, providerError)
+	r.stats.ObserveWithCooldown(backendName, time.Now(), status, ttftMs, providerError, cooldownOverride)
 }
 
 func (r *Router) Snapshot() map[string]StatsSnapshot {

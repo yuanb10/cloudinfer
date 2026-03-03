@@ -36,3 +36,24 @@ func TestValidateAllowsDebugExposeWithAuthTokenEnv(t *testing.T) {
 		t.Fatalf("validate config: %v", err)
 	}
 }
+
+func TestValidateRejectsInvalidRoutingJitter(t *testing.T) {
+	cfg := Config{
+		ServerConfig: ServerConfig{
+			Host:                 "127.0.0.1",
+			Port:                 8080,
+			ShutdownGraceSeconds: 20,
+		},
+		Routing: RoutingConfig{
+			CooldownJitterFraction: 1.5,
+		},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if got, want := err.Error(), "routing.cooldown_jitter_fraction must be between 0 and 1"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}

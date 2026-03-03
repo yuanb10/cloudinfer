@@ -32,13 +32,15 @@ type VertexConfig struct {
 }
 
 type RoutingConfig struct {
-	Enabled         bool    `mapstructure:"enabled" yaml:"enabled"`
-	EnabledSet      bool    `mapstructure:"-" yaml:"-"`
-	Policy          string  `mapstructure:"policy" yaml:"policy"`
-	CooldownSeconds int     `mapstructure:"cooldown_seconds" yaml:"cooldown_seconds"`
-	EwmaAlpha       float64 `mapstructure:"ewma_alpha" yaml:"ewma_alpha"`
-	MinSamples      int     `mapstructure:"min_samples" yaml:"min_samples"`
-	Prefer          string  `mapstructure:"prefer" yaml:"prefer"`
+	Enabled                bool    `mapstructure:"enabled" yaml:"enabled"`
+	EnabledSet             bool    `mapstructure:"-" yaml:"-"`
+	Policy                 string  `mapstructure:"policy" yaml:"policy"`
+	CooldownSeconds        int     `mapstructure:"cooldown_seconds" yaml:"cooldown_seconds"`
+	CooldownJitterFraction float64 `mapstructure:"cooldown_jitter_fraction" yaml:"cooldown_jitter_fraction"`
+	TTFTTimeoutMs          int     `mapstructure:"ttft_timeout_ms" yaml:"ttft_timeout_ms"`
+	EwmaAlpha              float64 `mapstructure:"ewma_alpha" yaml:"ewma_alpha"`
+	MinSamples             int     `mapstructure:"min_samples" yaml:"min_samples"`
+	Prefer                 string  `mapstructure:"prefer" yaml:"prefer"`
 }
 
 type BackendInstance struct {
@@ -112,6 +114,8 @@ func Load(configPath string) (Config, error) {
 	v.SetDefault("backend", "")
 	v.SetDefault("routing.policy", "ewma_ttft")
 	v.SetDefault("routing.cooldown_seconds", 15)
+	v.SetDefault("routing.cooldown_jitter_fraction", 0.2)
+	v.SetDefault("routing.ttft_timeout_ms", 1500)
 	v.SetDefault("routing.ewma_alpha", 0.2)
 	v.SetDefault("routing.min_samples", 5)
 	v.SetDefault("routing.prefer", "")

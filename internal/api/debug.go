@@ -52,12 +52,14 @@ type sanitizedConfig struct {
 }
 
 type sanitizedRoutingConfig struct {
-	Enabled         bool    `json:"enabled"`
-	Policy          string  `json:"policy"`
-	CooldownSeconds int     `json:"cooldown_seconds"`
-	EwmaAlpha       float64 `json:"ewma_alpha"`
-	MinSamples      int     `json:"min_samples"`
-	Prefer          string  `json:"prefer,omitempty"`
+	Enabled                bool    `json:"enabled"`
+	Policy                 string  `json:"policy"`
+	CooldownSeconds        int     `json:"cooldown_seconds"`
+	CooldownJitterFraction float64 `json:"cooldown_jitter_fraction"`
+	TTFTTimeoutMs          int     `json:"ttft_timeout_ms"`
+	EwmaAlpha              float64 `json:"ewma_alpha"`
+	MinSamples             int     `json:"min_samples"`
+	Prefer                 string  `json:"prefer,omitempty"`
 }
 
 type sanitizedBackendInstance struct {
@@ -166,12 +168,14 @@ func sanitizeOpenAIConfig(cfg config.OpenAIConfig) sanitizedOpenAIConfig {
 
 func sanitizeRoutingConfig(cfg config.RoutingConfig) sanitizedRoutingConfig {
 	return sanitizedRoutingConfig{
-		Enabled:         cfg.Enabled,
-		Policy:          cfg.Policy,
-		CooldownSeconds: cfg.CooldownSeconds,
-		EwmaAlpha:       cfg.EwmaAlpha,
-		MinSamples:      cfg.MinSamples,
-		Prefer:          cfg.Prefer,
+		Enabled:                cfg.Enabled,
+		Policy:                 cfg.Policy,
+		CooldownSeconds:        cfg.CooldownSeconds,
+		CooldownJitterFraction: cfg.CooldownJitterFraction,
+		TTFTTimeoutMs:          cfg.TTFTTimeoutMs,
+		EwmaAlpha:              cfg.EwmaAlpha,
+		MinSamples:             cfg.MinSamples,
+		Prefer:                 cfg.Prefer,
 	}
 }
 

@@ -70,9 +70,29 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) respondResponses(w http.ResponseWriter, r *http.Request, id string, created int64, req NormalizedRequest, start time.Time) {
-	decision, backendName, responseModel := s.selectExecutionTarget(nil, id, req.Model, false)
+	backendName := "mock"
+	responseModel := req.Model
+	var decision routing.Decision
 
-	outputText, ttftMs, status, err := s.collectResponsesOutput(r.Context(), req, decision, responseModel, start)
+	prepared, status, err := s.prepareBackendStream(r.Context(), req.Model, req.RoutingMessages())
+	if err != nil {
+		if status == "client_cancel" {
+			s.recordRequest(responsesEndpoint, id, backendName, responseModel, false, status, -1, start, created)
+			return
+		}
+
+		s.writeResponsesError(w, statusCodeForStatus(status), responseErrorMessage(status), errorTypeForStatus(status))
+		s.recordRequest(responsesEndpoint, id, backendName, responseModel, false, status, -1, start, created)
+		return
+	}
+	if prepared != nil {
+		defer prepared.Close()
+		decision = prepared.decision
+		backendName = prepared.backendName
+		responseModel = prepared.responseModel
+	}
+
+	outputText, ttftMs, status, err := s.collectResponsesOutput(r.Context(), req, decision, responseModel, prepared, start)
 	if err != nil {
 		if status == "client_cancel" {
 			s.observeRoute(decision, status, ttftMs)
@@ -80,7 +100,7 @@ func (s *Server) respondResponses(w http.ResponseWriter, r *http.Request, id str
 			return
 		}
 
-		s.observeRoute(decision, status, ttftMs)
+		s.observeRouteWithError(decision, status, ttftMs, err)
 		s.writeResponsesError(w, statusCodeForStatus(status), responseErrorMessage(status), errorTypeForStatus(status))
 		s.recordRequest(responsesEndpoint, id, backendName, responseModel, false, status, ttftMs, start, created)
 		return
@@ -116,7 +136,27 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, id stri
 		defer release()
 	}
 
-	decision, backendName, responseModel := s.selectExecutionTarget(w, id, req.Model, true)
+	backendName := "mock"
+	responseModel := req.Model
+	var decision routing.Decision
+
+	prepared, status, err := s.prepareBackendStream(r.Context(), req.Model, req.RoutingMessages())
+	if err != nil {
+		if status == "client_cancel" {
+			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, -1, start, created)
+			return
+		}
+
+		s.writeResponsesError(w, statusCodeForStatus(status), responseErrorMessage(status), errorTypeForStatus(status))
+		s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, -1, start, created)
+		return
+	}
+	if prepared != nil {
+		decision = prepared.decision
+		backendName = prepared.backendName
+		responseModel = prepared.responseModel
+		s.applyRouteHeaders(w, id, decision, responseModel)
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -133,8 +173,8 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, id stri
 	}
 	flusher.Flush()
 
-	if decision.Chosen.Client != nil {
-		s.streamRoutedResponse(w, r, flusher, id, created, backendName, responseModel, req, decision, start)
+	if prepared != nil {
+		s.streamRoutedResponse(w, r, flusher, id, created, backendName, responseModel, prepared, start)
 		return
 	}
 
@@ -196,7 +236,9 @@ func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, flus
 	s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, req NormalizedRequest, decision routing.Decision, start time.Time) {
+func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, prepared *preparedBackendStream, start time.Time) {
+	defer prepared.Close()
+
 	var (
 		builder            strings.Builder
 		ttftMs             int64 = -1
@@ -205,12 +247,42 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 		sequence                 = 0
 	)
 
-	tokenCh, errCh := decision.Chosen.Client.StreamText(r.Context(), responseModel, req.RoutingMessages())
+	tokenCh, errCh := prepared.tokenCh, prepared.errCh
+
+	if prepared.firstToken != "" {
+		delta := NormalizedDelta{
+			Text:         prepared.firstToken,
+			At:           prepared.firstTokenAt,
+			ChunkLatency: prepared.firstTokenAt.Sub(start),
+			Sequence:     sequence,
+			TTFT:         prepared.firstTokenAt.Sub(start),
+		}
+		ttftMs = delta.TTFT.Milliseconds()
+		firstTokenReceived = true
+		lastChunkTime = prepared.firstTokenAt
+		sequence++
+		builder.WriteString(prepared.firstToken)
+
+		event := openaitypes.NewResponseOutputTextDeltaEvent(
+			id,
+			prepared.firstToken,
+			delta.Sequence,
+			delta.TTFT.Milliseconds(),
+			delta.ChunkLatency.Milliseconds(),
+		)
+		if err := writeSSEEvent(w, event.Type, event); err != nil {
+			status := classifyStreamError(r)
+			s.observeRoute(prepared.decision, status, ttftMs)
+			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
+			return
+		}
+		flusher.Flush()
+	}
 
 	for tokenCh != nil || errCh != nil {
 		select {
 		case <-r.Context().Done():
-			s.observeRoute(decision, "client_cancel", ttftMs)
+			s.observeRoute(prepared.decision, "client_cancel", ttftMs)
 			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 			return
 		case token, ok := <-tokenCh:
@@ -244,7 +316,7 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 			)
 			if err := writeSSEEvent(w, event.Type, event); err != nil {
 				status := classifyStreamError(r)
-				s.observeRoute(decision, status, ttftMs)
+				s.observeRoute(prepared.decision, status, ttftMs)
 				s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 				return
 			}
@@ -258,12 +330,12 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 				continue
 			}
 
-			status := classifyProviderError(r)
-			if status == "provider_error" {
-				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, decision.Chosen.Name, decision.Chosen.Type, responseModel, err)
+			status := classifyProviderError(r, err)
+			if status == "upstream_error" {
+				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, prepared.decision.Chosen.Name, prepared.decision.Chosen.Type, responseModel, err)
 			}
 			_ = writeResponsesStreamError(w, flusher, responseErrorMessage(status), errorTypeForStatus(status))
-			s.observeRoute(decision, status, ttftMs)
+			s.observeRouteWithError(prepared.decision, status, ttftMs, err)
 			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 			return
 		}
@@ -272,18 +344,18 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 	completedEvent := openaitypes.NewResponseCompletedEvent(openaitypes.NewResponse(id, responseModel, "completed", created, builder.String()))
 	if err := writeSSEEvent(w, completedEvent.Type, completedEvent); err != nil {
 		status := classifyStreamError(r)
-		s.observeRoute(decision, status, ttftMs)
+		s.observeRoute(prepared.decision, status, ttftMs)
 		s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
-	s.observeRoute(decision, "ok", ttftMs)
+	s.observeRoute(prepared.decision, "ok", ttftMs)
 	s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
-func (s *Server) collectResponsesOutput(ctx context.Context, req NormalizedRequest, decision routing.Decision, responseModel string, start time.Time) (string, int64, string, error) {
-	if decision.Chosen.Client == nil {
+func (s *Server) collectResponsesOutput(ctx context.Context, req NormalizedRequest, decision routing.Decision, responseModel string, prepared *preparedBackendStream, start time.Time) (string, int64, string, error) {
+	if prepared == nil || decision.Chosen.Client == nil {
 		return "hello", time.Since(start).Milliseconds(), "ok", nil
 	}
 
@@ -293,7 +365,12 @@ func (s *Server) collectResponsesOutput(ctx context.Context, req NormalizedReque
 		firstReceived       = false
 	)
 
-	tokenCh, errCh := decision.Chosen.Client.StreamText(ctx, responseModel, req.RoutingMessages())
+	tokenCh, errCh := prepared.tokenCh, prepared.errCh
+	if prepared.firstToken != "" {
+		ttftMs = prepared.firstTokenAt.Sub(start).Milliseconds()
+		firstReceived = true
+		builder.WriteString(prepared.firstToken)
+	}
 
 	for tokenCh != nil || errCh != nil {
 		select {
@@ -317,7 +394,7 @@ func (s *Server) collectResponsesOutput(ctx context.Context, req NormalizedReque
 			if err == nil {
 				continue
 			}
-			return builder.String(), ttftMs, responseStatusFromContext(ctx), err
+			return builder.String(), ttftMs, responseStatusFromContext(ctx, err), err
 		}
 	}
 
@@ -344,11 +421,7 @@ func (s *Server) selectExecutionTarget(w http.ResponseWriter, requestID string, 
 	}
 
 	if includeRouteHeaders && s.router.Enabled() && w != nil {
-		w.Header().Set("X-CloudInfer-Backend", decision.Chosen.Name)
-		w.Header().Set("X-CloudInfer-Backend-Type", decision.Chosen.Type)
-		w.Header().Set("X-CloudInfer-Route-Reason", decision.Reason)
-		w.Header().Set("X-CloudInfer-Model", responseModel)
-		s.logRouteDecision(requestID, decision)
+		s.applyRouteHeaders(w, requestID, decision, responseModel)
 	}
 
 	return decision, backendName, responseModel
@@ -545,7 +618,13 @@ func statusCodeForStatus(status string) int {
 	switch status {
 	case "bad_request":
 		return http.StatusBadRequest
-	case "provider_error":
+	case "auth_failed":
+		return http.StatusUnauthorized
+	case "rate_limited":
+		return http.StatusTooManyRequests
+	case "timeout":
+		return http.StatusGatewayTimeout
+	case "upstream_error":
 		return http.StatusBadGateway
 	case "draining":
 		return http.StatusServiceUnavailable
@@ -558,6 +637,12 @@ func errorTypeForStatus(status string) string {
 	switch status {
 	case "bad_request":
 		return "invalid_request_error"
+	case "auth_failed":
+		return "authentication_error"
+	case "rate_limited":
+		return "rate_limit_error"
+	case "timeout":
+		return "timeout_error"
 	default:
 		return "server_error"
 	}
@@ -565,8 +650,16 @@ func errorTypeForStatus(status string) string {
 
 func responseErrorMessage(status string) string {
 	switch status {
-	case "provider_error":
+	case "auth_failed":
+		return "upstream authentication failed"
+	case "rate_limited":
+		return "upstream rate limit exceeded"
+	case "timeout":
+		return "upstream request timed out"
+	case "upstream_error":
 		return "upstream stream failed"
+	case "bad_request":
+		return "upstream rejected request"
 	case "draining":
 		return "draining"
 	case "client_cancel":
@@ -585,10 +678,15 @@ func defaultRequestModel(model string) string {
 	return model
 }
 
-func responseStatusFromContext(ctx context.Context) string {
+func responseStatusFromContext(ctx context.Context, err error) string {
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "client_cancel"
 	}
 
-	return "provider_error"
+	status := statusForAdapterError(err)
+	if status == "client_cancel" {
+		return "upstream_error"
+	}
+
+	return status
 }

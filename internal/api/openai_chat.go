@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myusername/cloudinfer/internal/adapters"
 	"github.com/myusername/cloudinfer/internal/routing"
 	"github.com/myusername/cloudinfer/internal/telemetry"
 )
@@ -111,7 +112,36 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	decision, backendName, responseModel := s.selectExecutionTarget(w, id, req.Model, true)
+	var release func()
+	if s.lc != nil {
+		if !s.lc.TryAcquireStream() {
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			s.recordRequest(chatCompletionsEndpoint, id, "unknown", req.Model, true, "draining", -1, start, created)
+			return
+		}
+		release = func() { s.lc.ReleaseStream() }
+		defer release()
+	}
+
+	backendName := "mock"
+	responseModel := req.Model
+
+	prepared, status, err := s.prepareBackendStream(r.Context(), req.Model, req.RoutingMessages())
+	if err != nil {
+		if status == "client_cancel" {
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, -1, start, created)
+			return
+		}
+
+		http.Error(w, responseErrorMessage(status), statusCodeForStatus(status))
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, -1, start, created)
+		return
+	}
+	if prepared != nil {
+		backendName = prepared.backendName
+		responseModel = prepared.responseModel
+		s.applyRouteHeaders(w, id, prepared.decision, responseModel)
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -119,19 +149,8 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	w.Header().Set("X-Request-Id", id)
 	w.WriteHeader(http.StatusOK)
 
-	var release func()
-	if s.lc != nil {
-		if !s.lc.TryAcquireStream() {
-			http.Error(w, "draining", http.StatusServiceUnavailable)
-			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "draining", -1, start, created)
-			return
-		}
-		release = func() { s.lc.ReleaseStream() }
-		defer release()
-	}
-
-	if decision.Chosen.Client != nil {
-		s.streamRoutedChatCompletion(w, r, flusher, id, created, backendName, responseModel, req.RoutingMessages(), decision, start)
+	if prepared != nil {
+		s.streamRoutedChatCompletion(w, r, flusher, id, created, backendName, responseModel, prepared, start)
 		return
 	}
 
@@ -219,16 +238,44 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 	s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, messages []routing.Message, decision routing.Decision, start time.Time) {
+func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, prepared *preparedBackendStream, start time.Time) {
+	defer prepared.Close()
+
 	var ttftMs int64 = -1
 	firstTokenReceived := false
 
-	tokenCh, errCh := decision.Chosen.Client.StreamText(r.Context(), responseModel, messages)
+	tokenCh, errCh := prepared.tokenCh, prepared.errCh
+
+	if prepared.firstToken != "" {
+		ttftMs = prepared.firstTokenAt.Sub(start).Milliseconds()
+		firstTokenReceived = true
+
+		chunk := chatCompletionResponse{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   responseModel,
+			Choices: []chatCompletionChoice{
+				{
+					Index:        0,
+					Delta:        &chatDelta{Content: prepared.firstToken},
+					FinishReason: nil,
+				},
+			},
+		}
+		if err := writeSSEData(w, chunk); err != nil {
+			status := classifyStreamError(r)
+			s.observeRoute(prepared.decision, status, ttftMs)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
+			return
+		}
+		flusher.Flush()
+	}
 
 	for tokenCh != nil || errCh != nil {
 		select {
 		case <-r.Context().Done():
-			s.observeRoute(decision, "client_cancel", ttftMs)
+			s.observeRoute(prepared.decision, "client_cancel", ttftMs)
 			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 			return
 		case token, ok := <-tokenCh:
@@ -258,7 +305,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 
 			if err := writeSSEData(w, chunk); err != nil {
 				status := classifyStreamError(r)
-				s.observeRoute(decision, status, ttftMs)
+				s.observeRoute(prepared.decision, status, ttftMs)
 				s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 				return
 			}
@@ -272,11 +319,11 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 				continue
 			}
 
-			status := classifyProviderError(r)
-			if status == "provider_error" {
-				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, decision.Chosen.Name, decision.Chosen.Type, responseModel, err)
+			status := classifyProviderError(r, err)
+			if status == "upstream_error" {
+				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, prepared.decision.Chosen.Name, prepared.decision.Chosen.Type, responseModel, err)
 			}
-			s.observeRoute(decision, status, ttftMs)
+			s.observeRouteWithError(prepared.decision, status, ttftMs, err)
 			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 			return
 		}
@@ -299,7 +346,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 
 	select {
 	case <-r.Context().Done():
-		s.observeRoute(decision, "client_cancel", ttftMs)
+		s.observeRoute(prepared.decision, "client_cancel", ttftMs)
 		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
@@ -307,7 +354,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 
 	if err := writeSSEData(w, finalChunk); err != nil {
 		status := classifyStreamError(r)
-		s.observeRoute(decision, status, ttftMs)
+		s.observeRoute(prepared.decision, status, ttftMs)
 		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	}
@@ -315,7 +362,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 
 	select {
 	case <-r.Context().Done():
-		s.observeRoute(decision, "client_cancel", ttftMs)
+		s.observeRoute(prepared.decision, "client_cancel", ttftMs)
 		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
@@ -323,13 +370,13 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 		status := classifyStreamError(r)
-		s.observeRoute(decision, status, ttftMs)
+		s.observeRoute(prepared.decision, status, ttftMs)
 		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
-	s.observeRoute(decision, "ok", ttftMs)
+	s.observeRoute(prepared.decision, "ok", ttftMs)
 	s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
@@ -354,12 +401,39 @@ func classifyStreamError(r *http.Request) string {
 	return "internal_error"
 }
 
-func classifyProviderError(r *http.Request) string {
+func classifyProviderError(r *http.Request, err error) string {
 	if errors.Is(r.Context().Err(), context.Canceled) || errors.Is(r.Context().Err(), context.DeadlineExceeded) {
 		return "client_cancel"
 	}
 
-	return "provider_error"
+	return statusForAdapterError(err)
+}
+
+func statusForAdapterError(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "client_cancel"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+
+	var adapterErr *adapters.Error
+	if errors.As(err, &adapterErr) {
+		switch adapterErr.Category {
+		case adapters.CategoryRateLimited:
+			return "rate_limited"
+		case adapters.CategoryTimeout:
+			return "timeout"
+		case adapters.CategoryAuthFailed:
+			return "auth_failed"
+		case adapters.CategoryInvalidRequest:
+			return "bad_request"
+		case adapters.CategoryUpstreamError:
+			return "upstream_error"
+		}
+	}
+
+	return "upstream_error"
 }
 
 func (s *Server) recordRequest(endpoint string, requestID string, backendName string, modelName string, stream bool, status string, ttftMs int64, start time.Time, created int64) {
@@ -424,11 +498,16 @@ func newGeneratedID(prefix string, fallbackPrefix string) string {
 }
 
 func (s *Server) observeRoute(decision routing.Decision, status string, ttftMs int64) {
-	if s == nil || s.router == nil || !s.router.Enabled() || decision.Chosen.Name == "" {
-		return
-	}
+	s.observeRouteWithError(decision, status, ttftMs, nil)
+}
 
-	s.router.Observe(decision.Chosen.Name, status, ttftMs, status == "provider_error")
+func isProviderFailureStatus(status string) bool {
+	switch status {
+	case "rate_limited", "timeout", "auth_failed", "upstream_error":
+		return true
+	default:
+		return false
+	}
 }
 
 func formatCandidates(candidates []routing.CandidateDecision) string {

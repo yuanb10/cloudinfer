@@ -116,6 +116,18 @@ Migration note:
 - The thin internal normalization layer keeps both endpoints routed through the
   same backend-selection path
 
+Routing safety behavior:
+
+- Before the first token is emitted, CloudInfer can abandon a slow backend and
+  retry once against the next eligible backend when `routing.ttft_timeout_ms`
+  is exceeded
+- This fallback is strictly pre-token only; once any token has been streamed to
+  the client, CloudInfer will not retry the request on another backend
+- `rate_limited` failures can apply an explicit cooldown from upstream
+  `Retry-After`
+- Breaker cooldowns include bounded jitter so multi-instance failback is spread
+  instead of synchronized
+
 ---
 
 ## Observability
@@ -134,7 +146,7 @@ Label policy:
 
 - `endpoint` is the API route template (`/v1/chat/completions` or `/v1/responses`)
 - `backend` is the selected backend name, or `mock` when no backend is used
-- `status` is the terminal request outcome (`ok`, `bad_request`, `draining`, `provider_error`, and similar terminal states)
+- `status` is the terminal request outcome (`ok`, `bad_request`, `rate_limited`, `timeout`, `auth_failed`, `upstream_error`, `draining`, and similar terminal states)
 - `model` is the resolved response model
 - No other application labels are allowed on these metrics
 
@@ -202,6 +214,47 @@ See [docs/SIDECAR.md](docs/SIDECAR.md) for:
 CloudInfer uses Application Default Credentials for Vertex AI. No API keys or
 secrets are required in the application config.
 
+Example backend config:
+
+OpenAI-compatible upstream:
+
+```yaml
+routing:
+  enabled: true
+  policy: ewma_ttft
+  cooldown_seconds: 15
+  cooldown_jitter_fraction: 0.2
+  ttft_timeout_ms: 1500
+
+backends:
+  - name: openai-primary
+    type: openai
+    openai:
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      model: gpt-4o-mini
+      timeout_seconds: 60
+```
+
+Vertex AI with ADC:
+
+```yaml
+routing:
+  enabled: true
+  policy: ewma_ttft
+  cooldown_seconds: 15
+  cooldown_jitter_fraction: 0.2
+  ttft_timeout_ms: 1500
+
+backends:
+  - name: vertex-primary
+    type: vertex
+    vertex:
+      project: your-gcp-project
+      location: us-central1
+      model: gemini-2.0-flash
+```
+
 Authenticate locally:
 
 ```bash
@@ -213,6 +266,14 @@ Enable the Vertex AI API for your GCP project:
 ```bash
 gcloud services enable aiplatform.googleapis.com
 ```
+
+Routing config notes:
+
+- `routing.ttft_timeout_ms` sets the pre-first-token watchdog; set `0` to
+  disable the fallback
+- `routing.cooldown_jitter_fraction` is a 0..1 multiplier applied around the
+  base cooldown; `0.2` means the breaker cooldown is randomized within
+  `80%` to `120%` of `routing.cooldown_seconds`
 
 ---
 
