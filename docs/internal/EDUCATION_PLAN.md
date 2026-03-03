@@ -21,15 +21,15 @@ To support users with zero Kubernetes knowledge, we include a **"Concepts Bridge
 
 ## 4. The Codelab Curriculum
 
-### Module 1: "Hello Sidecar" (Introductory - No K8s Required)
-**Status:** Planned
+### Module 1: "Hello CloudInfer" (Introductory - No K8s Required)
+**Status:** In Progress
 **Goal:** Run CloudInfer locally and stream a response in <2 minutes.
 - **Concepts:** Binary execution, local config, mock mode, SSE (Server-Sent Events) format.
 - **Hands-on:**
-    - Start `cloudinfer` binary with a mock backend.
+    - Start `cloudinfer` binary in built-in mock mode.
     - Use `curl` to observe token-by-token streaming.
-    - Inspect `X-CloudInfer-Request-Id` headers.
-- **Artifacts:** `codelab/01-hello-sidecar/router.yaml`.
+    - Inspect `X-Request-Id` headers.
+- **Artifacts:** `codelab/01-hello-cloudinfer/router.yaml`.
 
 ### Module 2: "Sidecars with Docker Compose" (Bridge - Zero K8s Knowledge)
 **Status:** Planned

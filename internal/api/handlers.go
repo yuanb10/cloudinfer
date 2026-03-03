@@ -37,6 +37,7 @@ func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.C
 
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
+	mux.HandleFunc("POST /v1/responses", s.handleResponses)
 	mux.HandleFunc("GET /healthz", s.healthHandler)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
 	mux.HandleFunc("GET /debug/routes", s.guardDebugEndpoint(s.debugRoutesHandler))

@@ -62,13 +62,59 @@ Start the server:
 go run ./cmd/cloudinfer -config router.yaml
 ```
 
-Send a streaming request:
+Send a chat-completions streaming request:
 
 ```bash
 curl -N http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"default","stream":true,"messages":[{"role":"user","content":"Say hello in 5 words."}]}'
 ```
+
+Send a Responses API streaming request:
+
+```bash
+curl -N http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","stream":true,"input":[{"role":"user","content":"Say hello in 5 words."}]}'
+```
+
+---
+
+## Responses API (supported subset)
+
+CloudInfer v0.2.0-alpha supports a narrow, explicitly documented subset of
+`POST /v1/responses`.
+
+Supported request fields:
+
+- `model`
+- `input` as an array of message-like items with `role` plus either string
+  `content` or text-part arrays (`type: "input_text"`)
+- `stream`
+- `max_output_tokens`
+- `temperature`
+
+Supported streaming semantic events:
+
+- `response.created`
+- `response.output_text.delta`
+- `response.completed`
+- `error`
+
+Current scope limits:
+
+- Text-only input and output
+- No tools or function calling
+- No multimodal inputs
+- No reasoning traces or agent state
+- No compatibility claims beyond the subset listed above
+
+Migration note:
+
+- Existing `POST /v1/chat/completions` support remains intact
+- For new clients, prefer moving generation calls to `POST /v1/responses`
+- The thin internal normalization layer keeps both endpoints routed through the
+  same backend-selection path
 
 ---
 
@@ -86,7 +132,7 @@ Current metrics:
 
 Label policy:
 
-- `endpoint` is the API route template (currently `/v1/chat/completions`)
+- `endpoint` is the API route template (`/v1/chat/completions` or `/v1/responses`)
 - `backend` is the selected backend name, or `mock` when no backend is used
 - `status` is the terminal request outcome (`ok`, `bad_request`, `draining`, `provider_error`, and similar terminal states)
 - `model` is the resolved response model

@@ -14,7 +14,7 @@ data:
       cooldown_seconds: 15
       ewma_alpha: 0.2
       min_samples: 5
-      prefer: openai-primary
+      prefer: vertex-fallback
 
     backends:
       - name: openai-primary
@@ -31,3 +31,10 @@ data:
           project: your-gcp-project-id
           location: us-central1
           model: gemini-2.0-flash-lite-001
+
+      - name: vertex-secondary
+        type: vertex
+        vertex:
+          project: your-gcp-project-id
+          location: us-central1
+          model: gemini-2.5-pro

@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+Cache-Control: no-cache
+Connection: keep-alive
+Content-Type: text/event-stream
+X-Cloudinfer-Backend: vertex-us
+X-Cloudinfer-Backend-Type: vertex
+X-Cloudinfer-Model: gemini-2.0-flash-lite-001
+X-Cloudinfer-Route-Reason: no_stats_yet
+X-Request-Id: chatcmpl-c77fc2d9f8bbec61
+Date: Tue, 03 Mar 2026 15:16:46 GMT
+Transfer-Encoding: chunked
+

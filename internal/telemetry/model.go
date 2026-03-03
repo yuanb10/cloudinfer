@@ -1,6 +1,7 @@
 package telemetry
 
 type TelemetryEvent struct {
+	Endpoint       string `json:"endpoint"`
 	RequestID      string `json:"request_id"`
 	Model          string `json:"model"`
 	Stream         bool   `json:"stream"`

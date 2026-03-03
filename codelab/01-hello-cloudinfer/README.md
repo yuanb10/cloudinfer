@@ -33,6 +33,7 @@ Our labs are progressive. Each one builds on the last:
 ## Prerequisites
 - **Go 1.23+** installed on your laptop.
 - A terminal with `curl` available.
+- Run the commands below from the repository root.
 
 ---
 
@@ -40,18 +41,18 @@ Our labs are progressive. Each one builds on the last:
 First, let's build the binary from the source code.
 
 ```bash
-go build -o cloudinfer ./cmd/cloudinfer
+go build -o ./codelab/01-hello-cloudinfer/cloudinfer ./cmd/cloudinfer
 ```
 
-You now have a single, self-contained `cloudinfer` file in your current directory.
+You now have a single, self-contained `cloudinfer` file in `codelab/01-hello-cloudinfer/`.
 
 ---
 
 ## 2. Start the Server
-Now, let's run CloudInfer using the "Hello World" configuration provided in this folder. This config uses a **mock backend**, which means CloudInfer will simulate a real AI provider response locally.
+Now, let's run CloudInfer using the "Hello World" configuration provided in this folder. This config uses CloudInfer's built-in **mock mode**, which means it will simulate a real AI provider response locally.
 
 ```bash
-./cloudinfer -config router.yaml
+./codelab/01-hello-cloudinfer/cloudinfer -config ./codelab/01-hello-cloudinfer/router.yaml
 ```
 
 **Wait for the log message:**  
@@ -60,10 +61,10 @@ Now, let's run CloudInfer using the "Hello World" configuration provided in this
 ---
 
 ## 3. Send a Streaming Request
-Open a **new terminal window** and send a streaming request to CloudInfer. We'll use `curl` to talk to it just like you would with OpenAI.
+Open a **new terminal window** and send a streaming request to CloudInfer. We'll use `curl` to talk to it just like you would with OpenAI. `-D -` prints the response headers first so you can see the request ID.
 
 ```bash
-curl -N http://127.0.0.1:8080/v1/chat/completions \
+curl -N -D - http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -79,7 +80,7 @@ Look closely at the output in your terminal. You should see chunks of data arriv
 
 - **Tokens:** You'll see `data: {"id":"chatcmpl-...", "choices": [{"delta": {"content": "h"}}...]}`. This is **Server-Sent Events (SSE)**, the standard way to stream LLM responses.
 - **Request IDs:** Every response has a unique `X-Request-Id`. This is critical for tracking and debugging in production.
-- **Mock Mode:** Since we didn't provide an API key, CloudInfer's mock engine generated a simple "hello" response.
+- **Mock Mode:** Since we didn't configure any backends, CloudInfer generated a simple "hello" response locally.
 
 ### Check the Server Logs
 Switch back to your first terminal window. You'll see structured logs for the request:
@@ -97,7 +98,7 @@ Every lab in this directory is automatically tested by our CI pipeline. If the c
 ## Summary
 You just successfully:
 1.  **Built** CloudInfer from source.
-2.  **Configured** it to run a mock sidecar.
+2.  **Configured** it to run in built-in mock mode.
 3.  **Interacted** with it using a standard OpenAI-compatible API.
 
 **Next Step:** In the next lab, we'll see how to run this same pattern inside **Docker Compose** to simulate a real multi-container application.
@@ -106,3 +107,8 @@ You just successfully:
 
 ## Cleanup
 Go back to the terminal where CloudInfer is running and press `Ctrl+C` to stop it.
+You can also remove the lab binary if you want:
+
+```bash
+rm -f ./codelab/01-hello-cloudinfer/cloudinfer
+```

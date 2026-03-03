@@ -58,24 +58,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if s.lc != nil && s.lc.Draining() {
 		http.Error(w, "draining", http.StatusServiceUnavailable)
-		s.recordChatCompletion(id, "unknown", "unknown", false, "draining", -1, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, "unknown", "unknown", false, "draining", -1, start, created)
 		return
 	}
 
 	var req chatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
-		s.recordChatCompletion(id, "unknown", "unknown", false, "bad_request", -1, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, "unknown", "unknown", false, "bad_request", -1, start, created)
 		return
 	}
 
-	requestModel := req.Model
-	if requestModel == "" {
-		requestModel = "mock-model"
-	}
+	normalized := normalizeChatCompletionRequest(req)
+	normalized.Model = defaultRequestModel(normalized.Model)
 
-	if req.Stream {
-		s.streamChatCompletion(w, r, id, created, requestModel, req.Messages, start)
+	if normalized.Stream {
+		s.streamChatCompletion(w, r, id, created, normalized, start)
 		return
 	}
 
@@ -84,7 +82,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ID:      id,
 		Object:  "chat.completion",
 		Created: created,
-		Model:   requestModel,
+		Model:   normalized.Model,
 		Choices: []chatCompletionChoice{
 			{
 				Index: 0,
@@ -98,42 +96,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	ttftMs := time.Since(start).Milliseconds()
 	if err := writeJSON(w, http.StatusOK, resp); err != nil {
-		s.recordChatCompletion(id, "mock", requestModel, false, "internal_error", ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, "mock", normalized.Model, false, "internal_error", ttftMs, start, created)
 		return
 	}
 
-	s.recordChatCompletion(id, "mock", requestModel, false, "ok", ttftMs, start, created)
+	s.recordRequest(chatCompletionsEndpoint, id, "mock", normalized.Model, false, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id string, created int64, requestModel string, messages []chatMessage, start time.Time) {
-	var decision routing.Decision
-	var responseModel string
-	backendName := "mock"
-
-	if s.router != nil && s.router.HasBackends() {
-		decision = s.router.Choose(requestModel)
-		if decision.Chosen.Name != "" {
-			backendName = decision.Chosen.Name
-		}
-		responseModel = decision.Chosen.Client.ResolvedModel(requestModel)
-
-		if s.router.Enabled() {
-			w.Header().Set("X-CloudInfer-Backend", decision.Chosen.Name)
-			w.Header().Set("X-CloudInfer-Backend-Type", decision.Chosen.Type)
-			w.Header().Set("X-CloudInfer-Route-Reason", decision.Reason)
-			w.Header().Set("X-CloudInfer-Model", responseModel)
-			s.logRouteDecision(id, decision)
-		}
-	} else {
-		responseModel = requestModel
-	}
-
+func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id string, created int64, req NormalizedRequest, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		s.recordChatCompletion(id, backendName, responseModel, true, "internal_error", -1, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, "unknown", req.Model, true, "internal_error", -1, start, created)
 		return
 	}
+
+	decision, backendName, responseModel := s.selectExecutionTarget(w, id, req.Model, true)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -145,7 +123,7 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	if s.lc != nil {
 		if !s.lc.TryAcquireStream() {
 			http.Error(w, "draining", http.StatusServiceUnavailable)
-			s.recordChatCompletion(id, backendName, responseModel, true, "draining", -1, start, created)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "draining", -1, start, created)
 			return
 		}
 		release = func() { s.lc.ReleaseStream() }
@@ -153,7 +131,7 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	}
 
 	if decision.Chosen.Client != nil {
-		s.streamRoutedChatCompletion(w, r, flusher, id, created, backendName, responseModel, toRoutingMessages(messages), decision, start)
+		s.streamRoutedChatCompletion(w, r, flusher, id, created, backendName, responseModel, req.RoutingMessages(), decision, start)
 		return
 	}
 
@@ -167,7 +145,7 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 	for _, char := range "hello" {
 		select {
 		case <-r.Context().Done():
-			s.recordChatCompletion(id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 			return
 		default:
 		}
@@ -187,7 +165,7 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 		}
 
 		if err := writeSSEData(w, chunk); err != nil {
-			s.recordChatCompletion(id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
 			return
 		}
 		if !firstChunkSent {
@@ -214,31 +192,31 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 
 	select {
 	case <-r.Context().Done():
-		s.recordChatCompletion(id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
 
 	if err := writeSSEData(w, finalChunk); err != nil {
-		s.recordChatCompletion(id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
 	select {
 	case <-r.Context().Done():
-		s.recordChatCompletion(id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
 
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-		s.recordChatCompletion(id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
-	s.recordChatCompletion(id, backendName, responseModel, true, "ok", ttftMs, start, created)
+	s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
 func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, messages []routing.Message, decision routing.Decision, start time.Time) {
@@ -251,7 +229,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 		select {
 		case <-r.Context().Done():
 			s.observeRoute(decision, "client_cancel", ttftMs)
-			s.recordChatCompletion(id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 			return
 		case token, ok := <-tokenCh:
 			if !ok {
@@ -281,7 +259,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 			if err := writeSSEData(w, chunk); err != nil {
 				status := classifyStreamError(r)
 				s.observeRoute(decision, status, ttftMs)
-				s.recordChatCompletion(id, backendName, responseModel, true, status, ttftMs, start, created)
+				s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 				return
 			}
 			flusher.Flush()
@@ -299,7 +277,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, decision.Chosen.Name, decision.Chosen.Type, responseModel, err)
 			}
 			s.observeRoute(decision, status, ttftMs)
-			s.recordChatCompletion(id, backendName, responseModel, true, status, ttftMs, start, created)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 			return
 		}
 	}
@@ -322,7 +300,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	select {
 	case <-r.Context().Done():
 		s.observeRoute(decision, "client_cancel", ttftMs)
-		s.recordChatCompletion(id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
@@ -330,7 +308,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	if err := writeSSEData(w, finalChunk); err != nil {
 		status := classifyStreamError(r)
 		s.observeRoute(decision, status, ttftMs)
-		s.recordChatCompletion(id, backendName, responseModel, true, status, ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
@@ -338,7 +316,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	select {
 	case <-r.Context().Done():
 		s.observeRoute(decision, "client_cancel", ttftMs)
-		s.recordChatCompletion(id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
 		return
 	default:
 	}
@@ -346,13 +324,13 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 		status := classifyStreamError(r)
 		s.observeRoute(decision, status, ttftMs)
-		s.recordChatCompletion(id, backendName, responseModel, true, status, ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
 	s.observeRoute(decision, "ok", ttftMs)
-	s.recordChatCompletion(id, backendName, responseModel, true, "ok", ttftMs, start, created)
+	s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
 func writeSSEData(w http.ResponseWriter, payload any) error {
@@ -384,12 +362,12 @@ func classifyProviderError(r *http.Request) string {
 	return "provider_error"
 }
 
-func (s *Server) recordChatCompletion(requestID string, backendName string, modelName string, stream bool, status string, ttftMs int64, start time.Time, created int64) {
+func (s *Server) recordRequest(endpoint string, requestID string, backendName string, modelName string, stream bool, status string, ttftMs int64, start time.Time, created int64) {
 	totalLatency := time.Since(start)
 
 	if s.metrics != nil {
 		s.metrics.ObserveChatCompletion(
-			chatCompletionsEndpoint,
+			endpoint,
 			backendName,
 			modelName,
 			status,
@@ -401,6 +379,7 @@ func (s *Server) recordChatCompletion(requestID string, backendName string, mode
 
 	if s.logger != nil {
 		s.logger.Log(telemetry.TelemetryEvent{
+			Endpoint:       endpoint,
 			RequestID:      requestID,
 			Model:          modelName,
 			Stream:         stream,
@@ -428,24 +407,20 @@ func (s *Server) logRouteDecision(requestID string, decision routing.Decision) {
 }
 
 func newChatCompletionID() string {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
-	}
-
-	return "chatcmpl-" + hex.EncodeToString(raw[:])
+	return newGeneratedID("chatcmpl-", "chatcmpl")
 }
 
-func toRoutingMessages(messages []chatMessage) []routing.Message {
-	routingMessages := make([]routing.Message, 0, len(messages))
-	for _, message := range messages {
-		routingMessages = append(routingMessages, routing.Message{
-			Role:    message.Role,
-			Content: message.Content,
-		})
+func newResponseID() string {
+	return newGeneratedID("resp_", "resp")
+}
+
+func newGeneratedID(prefix string, fallbackPrefix string) string {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("%s-%d", fallbackPrefix, time.Now().UnixNano())
 	}
 
-	return routingMessages
+	return prefix + hex.EncodeToString(raw[:])
 }
 
 func (s *Server) observeRoute(decision routing.Decision, status string, ttftMs int64) {

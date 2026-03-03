@@ -1,7 +1,7 @@
 #!/bin/bash
 # verify.sh - Automated verification for Codelab 01
 
-set -e
+set -euo pipefail
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$DIR/../.."
@@ -14,7 +14,7 @@ echo ">> Starting cloudinfer in the background..."
 SERVER_PID=$!
 
 # Ensure cleanup even if the test fails
-trap "kill $SERVER_PID" EXIT
+trap 'if kill -0 "$SERVER_PID" 2>/dev/null; then kill "$SERVER_PID"; fi' EXIT
 
 echo ">> Waiting for server to become ready..."
 ATTEMPTS=0
@@ -29,8 +29,8 @@ while ! curl -s http://127.0.0.1:8080/healthz > /dev/null; do
 done
 
 echo ">> Sending a test streaming request..."
-RESPONSE=$(curl -N -s http://127.0.0.1:8080/v1/chat/completions 
-  -H "Content-Type: application/json" 
+RESPONSE=$(curl -N -s -D "$DIR/response.headers" http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
   -d '{"model": "default", "stream": true, "messages": [{"role": "user", "content": "hi"}]}')
 
 if [[ "$RESPONSE" == *"data: [DONE]"* ]]; then
@@ -41,9 +41,19 @@ else
   exit 1
 fi
 
+echo ">> Verifying request ID header..."
+if grep -qi '^X-Request-Id:' "$DIR/response.headers"; then
+  echo ">> SUCCESS: X-Request-Id header is present."
+else
+  echo ">> FAILED: X-Request-Id header is missing."
+  echo "Headers:"
+  cat "$DIR/response.headers"
+  exit 1
+fi
+
 echo ">> Verifying readiness probe..."
 READY_RESPONSE=$(curl -s http://127.0.0.1:8080/readyz)
-if [[ "$READY_RESPONSE" == *""ready":true"* ]]; then
+if [[ "$READY_RESPONSE" == *'"ready":true'* ]]; then
   echo ">> SUCCESS: Readiness probe reports healthy."
 else
   echo ">> FAILED: Readiness probe is unhealthy."
