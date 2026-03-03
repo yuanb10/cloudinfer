@@ -20,6 +20,21 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Verify codelabs
+        shell: bash
+        run: |
+          shopt -s nullglob
+          scripts=(codelab/*/verify.sh)
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "No codelab verification scripts found."
+            exit 0
+          fi
+
+          for script in "${scripts[@]}"; do
+            echo "Running ${script}"
+            bash "${script}"
+          done
+
       - name: gofmt
         run: |
           test -z "$(gofmt -l .)"
