@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"github.com/myusername/cloudinfer/internal/backends/vertex"
 	"github.com/myusername/cloudinfer/internal/backends/wrap"
 	"github.com/myusername/cloudinfer/internal/config"
+	"github.com/myusername/cloudinfer/internal/lifecycle"
 	"github.com/myusername/cloudinfer/internal/metrics"
 	"github.com/myusername/cloudinfer/internal/routing"
 	"github.com/myusername/cloudinfer/internal/telemetry"
@@ -35,10 +37,8 @@ func main() {
 	mux := http.NewServeMux()
 	collector := metrics.New()
 	logger := telemetry.NewJSONStdoutLogger()
-	runtime := api.RuntimeState{
-		RoutingEnabled: cfg.EffectiveRoutingEnabled(),
-		Backends:       make([]api.BackendStatus, 0, len(cfg.Backends)),
-	}
+	backendsStatus := make([]api.BackendStatus, 0, len(cfg.Backends))
+	drainState := lifecycle.NewDrainState()
 
 	routingBackends := make([]routing.Backend, 0, len(cfg.Backends))
 	for _, backendCfg := range cfg.Backends {
@@ -53,13 +53,13 @@ func main() {
 			vertexAdapter, initErr := vertex.NewAdapter(context.Background(), backendCfg.Vertex)
 			if initErr != nil {
 				backendStatus.InitError = initErr.Error()
-				runtime.Backends = append(runtime.Backends, backendStatus)
+				backendsStatus = append(backendsStatus, backendStatus)
 				log.Printf("initialize vertex adapter %q: %v", backendCfg.Name, initErr)
 				continue
 			}
 			streamer := wrap.NewVertexStreamer(backendCfg.Name, backendCfg.Vertex.Model, vertexAdapter)
 			backendStatus.Initialized = true
-			runtime.Backends = append(runtime.Backends, backendStatus)
+			backendsStatus = append(backendsStatus, backendStatus)
 			routingBackends = append(routingBackends, routing.Backend{
 				Name:   backendCfg.Name,
 				Type:   backendCfg.Type,
@@ -75,13 +75,13 @@ func main() {
 			openAIAdapter, initErr := openaibackend.New(backendCfg.OpenAI)
 			if initErr != nil {
 				backendStatus.InitError = initErr.Error()
-				runtime.Backends = append(runtime.Backends, backendStatus)
+				backendsStatus = append(backendsStatus, backendStatus)
 				log.Printf("initialize openai-compatible adapter %q: %v", backendCfg.Name, initErr)
 				continue
 			}
 			streamer := wrap.NewOpenAIStreamer(backendCfg.Name, openAIAdapter)
 			backendStatus.Initialized = true
-			runtime.Backends = append(runtime.Backends, backendStatus)
+			backendsStatus = append(backendsStatus, backendStatus)
 			routingBackends = append(routingBackends, routing.Backend{
 				Name:   backendCfg.Name,
 				Type:   backendCfg.Type,
@@ -112,7 +112,8 @@ func main() {
 		})
 	}
 
-	api.NewServer(&cfg, logger, collector, router, runtime).RegisterRoutes(mux)
+	runtime := api.NewRuntimeState(cfg.EffectiveRoutingEnabled(), backendsStatus)
+	api.NewServer(&cfg, logger, collector, router, runtime, drainState).RegisterRoutes(mux)
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
@@ -125,10 +126,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	ln, err := net.Listen("tcp", cfg.Address())
+	if err != nil {
+		log.Fatalf("listen on %s: %v", cfg.Address(), err)
+	}
+	runtime.SetListenerReady()
+
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("starting cloudinfer server on %s", server.Addr)
-		serverErr <- server.ListenAndServe()
+		log.Printf("READY: starting cloudinfer server on %s", server.Addr)
+		serverErr <- server.Serve(ln)
 	}()
 
 	select {
@@ -139,18 +146,27 @@ func main() {
 		log.Printf("server stopped")
 	case <-ctx.Done():
 		gracePeriod := cfg.ShutdownGracePeriod()
-		log.Printf("shutdown signal received, shutting down server with grace period=%s", gracePeriod)
+		drainDeadline := time.Now().Add(gracePeriod)
+		log.Printf("DRAINING_START: shutdown signal received, initiating drain with grace period=%s", gracePeriod)
+
+		runtime.StartDrain()
+		drainState.StartDrain(drainDeadline)
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("graceful shutdown did not complete cleanly: %v", err)
+			log.Printf("SHUTDOWN_FORCED: graceful shutdown did not complete cleanly: %v", err)
 			if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
 				log.Printf("force close failed: %v", closeErr)
 			}
 		}
 
-		log.Printf("server shutdown completed")
+		log.Printf("DRAINING_DONE: server shutdown completed")
+		drainWaitCtx, drainCancel := context.WithDeadline(context.Background(), drainDeadline)
+		defer drainCancel()
+		if !drainState.Wait(drainWaitCtx) {
+			log.Printf("drain deadline reached with %d streams still active", drainState.InFlight())
+		}
 	}
 }

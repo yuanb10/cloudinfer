@@ -54,6 +54,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	created := start.Unix()
 	w.Header().Set("X-Request-Id", id)
 
+	if s.lc != nil && s.lc.Draining() {
+		http.Error(w, "draining", http.StatusServiceUnavailable)
+		return
+	}
+
 	var req chatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -128,6 +133,17 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Request-Id", id)
 	w.WriteHeader(http.StatusOK)
+
+	var release func()
+	if s.lc != nil {
+		if !s.lc.TryAcquireStream() {
+			http.Error(w, "draining", http.StatusServiceUnavailable)
+			s.recordChatCompletion(id, responseModel, true, "draining", 0, start, created)
+			return
+		}
+		release = func() { s.lc.ReleaseStream() }
+		defer release()
+	}
 
 	if decision.Chosen.Client != nil {
 		s.streamRoutedChatCompletion(w, r, flusher, id, created, responseModel, toRoutingMessages(messages), decision, start)

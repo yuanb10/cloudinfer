@@ -4,25 +4,10 @@ metadata:
   name: app-with-cloudinfer
 spec:
   terminationGracePeriodSeconds: 30
-  containers:
-    - name: app
-      image: ghcr.io/example/your-app:latest
-      env:
-        - name: OPENAI_BASE_URL
-          value: http://127.0.0.1:8080/v1
-      ports:
-        - name: http
-          containerPort: 3000
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          cpu: 500m
-          memory: 256Mi
-
+  initContainers:
     - name: cloudinfer
       image: ghcr.io/example/cloudinfer:latest
+      restartPolicy: Always
       args:
         - -config
         - /etc/cloudinfer/router.yaml
@@ -60,6 +45,24 @@ spec:
         - name: cloudinfer-config
           mountPath: /etc/cloudinfer
           readOnly: true
+
+  containers:
+    - name: app
+      image: ghcr.io/example/your-app:latest
+      env:
+        - name: OPENAI_BASE_URL
+          value: http://127.0.0.1:8080/v1
+      ports:
+        - name: http
+          containerPort: 3000
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+
   volumes:
     - name: cloudinfer-config
       configMap:

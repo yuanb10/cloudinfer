@@ -19,3 +19,7 @@ jobs:
 
       - name: Run tests
         run: go test ./...
+
+      - name: gofmt
+        run: |
+          test -z "$(gofmt -l .)"

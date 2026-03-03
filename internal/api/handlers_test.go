@@ -44,7 +44,9 @@ func TestHealthzHandler(t *testing.T) {
 	cfg := &config.Config{}
 	logger := telemetry.NewJSONStdoutLogger()
 	collector := metrics.New()
-	s := NewServer(cfg, logger, collector, nil, RuntimeState{})
+	runtime := NewRuntimeState(false, nil)
+	runtime.SetListenerReady()
+	s := NewServer(cfg, logger, collector, nil, runtime, nil)
 
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
@@ -63,7 +65,9 @@ func TestHealthzHandler(t *testing.T) {
 }
 
 func TestReadyzReturnsMockModeWhenNoBackendsConfigured(t *testing.T) {
-	server := newTestServer(t, nil, RuntimeState{})
+	runtime := NewRuntimeState(false, nil)
+	runtime.SetListenerReady()
+	server := newTestServer(t, nil, runtime)
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
@@ -87,13 +91,12 @@ func TestReadyzReturnsMockModeWhenNoBackendsConfigured(t *testing.T) {
 }
 
 func TestReadyzReturnsServiceUnavailableWhenAllBackendsFailedInit(t *testing.T) {
-	server := newTestServer(t, nil, RuntimeState{
-		RoutingEnabled: true,
-		Backends: []BackendStatus{
-			{Name: "alpha", Type: "openai", DefaultModel: "gpt-4o-mini", InitError: "missing api key"},
-			{Name: "beta", Type: "vertex", DefaultModel: "gemini-2.0-flash", InitError: "missing adc"},
-		},
+	runtime := NewRuntimeState(true, []BackendStatus{
+		{Name: "alpha", Type: "openai", DefaultModel: "gpt-4o-mini", InitError: "missing api key"},
+		{Name: "beta", Type: "vertex", DefaultModel: "gemini-2.0-flash", InitError: "missing adc"},
 	})
+	runtime.SetListenerReady()
+	server := newTestServer(t, nil, runtime)
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
@@ -128,13 +131,12 @@ func TestDebugRoutesReturnsStatsAndNoSecrets(t *testing.T) {
 		routing.PolicyConfig{Enabled: true, Policy: "ewma_ttft", MinSamples: 1},
 	)
 
-	server := newTestServer(t, router, RuntimeState{
-		RoutingEnabled: true,
-		Backends: []BackendStatus{
-			{Name: "alpha", Type: "openai", DefaultModel: "gpt-4o-mini", Initialized: true},
-			{Name: "beta", Type: "openai", DefaultModel: "gpt-4.1-mini", InitError: "missing api key"},
-		},
+	runtime := NewRuntimeState(true, []BackendStatus{
+		{Name: "alpha", Type: "openai", DefaultModel: "gpt-4o-mini", Initialized: true},
+		{Name: "beta", Type: "openai", DefaultModel: "gpt-4.1-mini", InitError: "missing api key"},
 	})
+	runtime.SetListenerReady()
+	server := newTestServer(t, router, runtime)
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/routes", nil)
 	rr := httptest.NewRecorder()
@@ -182,7 +184,9 @@ func TestDebugConfigMasksHeaderValues(t *testing.T) {
 	}
 	logger := telemetry.NewJSONStdoutLogger()
 	collector := metrics.New()
-	s := NewServer(cfg, logger, collector, nil, RuntimeState{})
+	runtime := NewRuntimeState(false, nil)
+	runtime.SetListenerReady()
+	s := NewServer(cfg, logger, collector, nil, runtime, nil)
 
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
@@ -209,13 +213,13 @@ func TestDebugConfigMasksHeaderValues(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T, router *routing.Router, runtime RuntimeState) *http.ServeMux {
+func newTestServer(t *testing.T, router *routing.Router, runtime *RuntimeState) *http.ServeMux {
 	t.Helper()
 
 	cfg := &config.Config{}
 	logger := telemetry.NewJSONStdoutLogger()
 	collector := metrics.New()
-	s := NewServer(cfg, logger, collector, router, runtime)
+	s := NewServer(cfg, logger, collector, router, runtime, nil)
 
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)

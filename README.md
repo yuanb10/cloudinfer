@@ -72,6 +72,24 @@ curl -N http://localhost:8080/v1/chat/completions \
 
 ---
 
+## Kubernetes Deploy (v0.1.0-alpha)
+
+Apply the dev overlay (router-only Deployment + ConfigMap + ServiceAccount):
+
+```bash
+kubectl apply -k deploy/overlays/dev/
+```
+
+Defaults:
+- `livenessProbe` -> `GET /healthz`
+- `readinessProbe` -> `GET /readyz`
+- `terminationGracePeriodSeconds: 60` (overridable in overlays)
+
+The long grace period plus readiness flip on SIGTERM give in-flight SSE streams time to drain instead of being cut mid-response.
+Enable the optional ClusterIP Service by uncommenting `service.yaml` in `deploy/base/kustomization.yaml` or adding it as a resource in an overlay.
+
+---
+
 ## Sidecar Mode
 
 CloudInfer can run as a telemetry-driven inference control plane sidecar in Kubernetes.

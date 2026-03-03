@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudinfer
+spec:
+  replicas: 3
+  template:
+    spec:
+      terminationGracePeriodSeconds: 90
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: inference
+          effect: NoSchedule
+      containers:
+        - name: cloudinfer
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

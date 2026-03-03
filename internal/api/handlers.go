@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/myusername/cloudinfer/internal/config"
+	"github.com/myusername/cloudinfer/internal/lifecycle"
 	"github.com/myusername/cloudinfer/internal/metrics"
 	"github.com/myusername/cloudinfer/internal/routing"
 	"github.com/myusername/cloudinfer/internal/telemetry"
@@ -15,16 +16,18 @@ type Server struct {
 	logger  telemetry.Logger
 	metrics *metrics.Collector
 	router  *routing.Router
-	runtime RuntimeState
+	runtime *RuntimeState
+	lc      *lifecycle.DrainState
 }
 
-func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.Collector, router *routing.Router, runtime RuntimeState) *Server {
+func NewServer(cfg *config.Config, logger telemetry.Logger, collector *metrics.Collector, router *routing.Router, runtime *RuntimeState, lc *lifecycle.DrainState) *Server {
 	return &Server{
 		cfg:     cfg,
 		logger:  logger,
 		metrics: collector,
 		router:  router,
 		runtime: runtime,
+		lc:      lc,
 	}
 }
 
