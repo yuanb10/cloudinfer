@@ -1,0 +1,16 @@
+# Hello CloudInfer - Local Mock Configuration
+# No API keys required.
+
+server_host: 127.0.0.1
+server_port: 8080
+
+# Routing is disabled since we only have one mock backend.
+routing:
+  enabled: false
+
+backends:
+  - name: mock-backend
+    type: openai
+    openai:
+      base_url: "http://localhost:8080/v1" # Points back to itself for mock logic
+      model: "mock-model"
