@@ -1,6 +1,32 @@
 # Codelab: Hello CloudInfer
 
-Welcome! This lab is for anyone who wants to see **CloudInfer** in action on their laptop in under 2 minutes. **No Kubernetes, no Docker, and no API keys required.**
+Welcome to the CloudInfer educational journey! 
+
+CloudInfer is a **telemetry-driven inference control plane** for streaming LLM workloads. These codelabs are designed to take you from a curious developer to a production-grade infrastructure engineer, regardless of your starting point.
+
+This first lab is for anyone who wants to see **CloudInfer** in action on their laptop in under 2 minutes. **No Kubernetes, no Docker, and no API keys required.**
+
+---
+
+## 🚀 Who is this for?
+- **LLM Developers:** Learn how to make your apps faster and more reliable.
+- **Backend Engineers:** Discover how to manage multiple AI providers without complex code.
+- **SRE/Platform Engineers:** Master Kubernetes-native LLM orchestration and lifecycle.
+- **Beginners:** We have "No-K8s" paths specifically for you!
+
+---
+
+## 🗺️ The Learning Path
+
+Our labs are progressive. Each one builds on the last:
+
+| Level | Module | Title | Key Learning |
+| :--- | :--- | :--- | :--- |
+| 🟢 | **01** | **Hello CloudInfer** | Run a mock sidecar on your laptop in 2 mins. |
+| 🟡 | **02** | **Sidecars with Docker** | *Coming Soon:* Multi-container apps without K8s. |
+| 🟡 | **03** | **Kubernetes Basics** | *Coming Soon:* Your first Pod and Readiness probes. |
+| 🟠 | **04** | **Intelligent Routing** | *Coming Soon:* EWMA TTFT and dynamic failover. |
+| 🔴 | **05** | **Safe Operations** | *Coming Soon:* SIGTERM drains and zero-drop rollouts. |
 
 ---
 
@@ -37,8 +63,8 @@ Now, let's run CloudInfer using the "Hello World" configuration provided in this
 Open a **new terminal window** and send a streaming request to CloudInfer. We'll use `curl` to talk to it just like you would with OpenAI.
 
 ```bash
-curl -N http://127.0.0.1:8080/v1/chat/completions 
-  -H "Content-Type: application/json" 
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
   -d '{
     "model": "default",
     "stream": true,
@@ -60,6 +86,11 @@ Switch back to your first terminal window. You'll see structured logs for the re
 - `ttft_ms`: Time-To-First-Token. This is the most important metric for LLM UX.
 - `total_latency_ms`: How long the entire response took.
 - `status`: Should be `ok`.
+
+---
+
+## 🧪 CI-Verified
+Every lab in this directory is automatically tested by our CI pipeline. If the code changes, the labs are updated to match. This means the instructions you see here are **guaranteed to work**.
 
 ---
 
