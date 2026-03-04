@@ -17,8 +17,10 @@ import (
 	"github.com/myusername/cloudinfer/internal/api"
 	"github.com/myusername/cloudinfer/internal/backends/wrap"
 	"github.com/myusername/cloudinfer/internal/config"
+	tracinghttp "github.com/myusername/cloudinfer/internal/http"
 	"github.com/myusername/cloudinfer/internal/lifecycle"
 	"github.com/myusername/cloudinfer/internal/metrics"
+	otelbootstrap "github.com/myusername/cloudinfer/internal/otel"
 	"github.com/myusername/cloudinfer/internal/routing"
 	"github.com/myusername/cloudinfer/internal/telemetry"
 )
@@ -34,6 +36,18 @@ func main() {
 	}
 
 	log.Printf("configuration loaded, server address=%s", cfg.Address())
+
+	shutdownTracing, err := otelbootstrap.Bootstrap(context.Background())
+	if err != nil {
+		log.Fatalf("initialize opentelemetry: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Printf("shutdown opentelemetry: %v", err)
+		}
+	}()
 
 	mux := http.NewServeMux()
 	collector := metrics.New()
@@ -139,7 +153,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.Address(),
-		Handler:           mux,
+		Handler:           tracinghttp.NewTracingMiddleware(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       60 * time.Second,

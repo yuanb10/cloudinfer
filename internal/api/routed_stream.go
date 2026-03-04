@@ -10,6 +10,9 @@ import (
 	"github.com/myusername/cloudinfer/internal/adapters"
 	"github.com/myusername/cloudinfer/internal/config"
 	"github.com/myusername/cloudinfer/internal/routing"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -40,10 +43,26 @@ func (s *Server) prepareBackendStream(ctx context.Context, requestModel string, 
 		return nil, "", nil
 	}
 
+	ctx, span := otel.Tracer("github.com/myusername/cloudinfer/router").Start(ctx, "router.select")
+	var (
+		finalBackend string
+		finalReason  string
+		retryCount   int
+	)
+	defer func() {
+		span.SetAttributes(
+			attribute.String("backend", finalBackend),
+			attribute.String("reason", finalReason),
+			attribute.Int("retry_count", retryCount),
+		)
+		span.End()
+	}()
+
 	budget := routing.BudgetFromContext(ctx)
 	decision := s.router.Choose(requestModel)
 	for attempts := 1; ; attempts++ {
 		if decision.Chosen.Client == nil || decision.Chosen.Name == "" {
+			finalReason = decision.Reason
 			return nil, "", nil
 		}
 		if s.metrics != nil {
@@ -58,6 +77,13 @@ func (s *Server) prepareBackendStream(ctx context.Context, requestModel string, 
 
 		firstToken, firstTokenAt, status, err := s.waitForFirstToken(attemptCtx, tokenCh, errCh, budget, timeouts.TTFT)
 		if status == "" {
+			finalBackend = decision.Chosen.Name
+			finalReason = decision.Reason
+			retryCount = attempts - 1
+			span.AddEvent("first_token", trace.WithAttributes(
+				attribute.String("backend", decision.Chosen.Name),
+				attribute.String("model", responseModel),
+			))
 			return &preparedBackendStream{
 				decision:      decision,
 				backendName:   decision.Chosen.Name,
@@ -72,16 +98,25 @@ func (s *Server) prepareBackendStream(ctx context.Context, requestModel string, 
 
 		cancel()
 		if status == "client_cancel" {
+			finalBackend = decision.Chosen.Name
+			finalReason = status
+			retryCount = attempts - 1
 			return nil, status, err
 		}
 
 		s.observeRouteWithError(decision, status, -1, err)
 		if !retryPolicy.ShouldRetry(false, status, attempts) {
+			finalBackend = decision.Chosen.Name
+			finalReason = status
+			retryCount = attempts - 1
 			return nil, status, err
 		}
 
 		nextDecision := s.router.Choose(requestModel)
 		if nextDecision.Chosen.Name == "" || nextDecision.Chosen.Name == decision.Chosen.Name {
+			finalBackend = decision.Chosen.Name
+			finalReason = status
+			retryCount = attempts - 1
 			return nil, status, err
 		}
 
@@ -93,8 +128,14 @@ func (s *Server) prepareBackendStream(ctx context.Context, requestModel string, 
 		backoff := retryPolicy.Backoff(attempts-1, retryAfterFromError(err))
 		if waitErr := waitForRetryBackoff(ctx, budget, backoff); waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
+				finalBackend = decision.Chosen.Name
+				finalReason = "client_cancel"
+				retryCount = attempts - 1
 				return nil, "client_cancel", waitErr
 			}
+			finalBackend = decision.Chosen.Name
+			finalReason = timeoutStatusBudget
+			retryCount = attempts - 1
 			return nil, timeoutStatusBudget, &adapters.Error{
 				Category: adapters.CategoryTimeout,
 				Message:  "total request timeout exceeded during retry backoff",

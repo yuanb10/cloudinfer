@@ -11,6 +11,10 @@ import (
 
 	"github.com/myusername/cloudinfer/internal/adapters"
 	"github.com/myusername/cloudinfer/internal/config"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Client interface {
@@ -57,6 +61,19 @@ func (a *Adapter) Close() error {
 }
 
 func (a *Adapter) Generate(ctx context.Context, req adapters.NormalizedRequest) (adapters.Stream, adapters.Meta, error) {
+	adapterName := "vertex-adc"
+	if a != nil {
+		adapterName = a.Name()
+	}
+	ctx, span := otel.Tracer("github.com/myusername/cloudinfer/adapter/vertex").Start(
+		ctx,
+		"adapter.call",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("adapter.name", adapterName),
+			attribute.String("upstream.host", "vertex.googleapis.com"),
+		),
+	)
 	model := a.resolveModel(req.Model)
 	meta := adapters.Meta{
 		Model:      model,
@@ -64,6 +81,7 @@ func (a *Adapter) Generate(ctx context.Context, req adapters.NormalizedRequest) 
 	}
 
 	if a == nil || a.client == nil {
+		span.End()
 		return nil, meta, &adapters.Error{
 			Category: adapters.CategoryUpstreamError,
 			Message:  "vertex adapter is not configured",
@@ -72,14 +90,23 @@ func (a *Adapter) Generate(ctx context.Context, req adapters.NormalizedRequest) 
 
 	contents, genConfig, err := buildRequest(req)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
 		return nil, meta, err
 	}
 
 	if !req.Stream {
 		resp, err := a.client.GenerateContent(ctx, model, contents, genConfig)
 		if err != nil {
-			return nil, adapters.Meta{Model: model, StreamMode: adapters.StreamModeSingle}, mapVertexRuntimeError("generate content", err)
+			mappedErr := mapVertexRuntimeError("generate content", err)
+			span.RecordError(mappedErr)
+			span.SetStatus(codes.Error, mappedErr.Error())
+			span.End()
+			return nil, adapters.Meta{Model: model, StreamMode: adapters.StreamModeSingle}, mappedErr
 		}
+		span.AddEvent("first_token")
+		span.End()
 		return adapters.NewTextStream(responseText(resp)), adapters.Meta{Model: model, StreamMode: adapters.StreamModeSingle}, nil
 	}
 
@@ -112,7 +139,7 @@ func (a *Adapter) Generate(ctx context.Context, req adapters.NormalizedRequest) 
 		}
 	}()
 
-	return adapters.NewEventStream(events, nil), meta, nil
+	return adapters.WrapStreamWithSpan(adapters.NewEventStream(events, nil), span), meta, nil
 }
 
 func buildRequest(req adapters.NormalizedRequest) ([]*genai.Content, *genai.GenerateContentConfig, error) {

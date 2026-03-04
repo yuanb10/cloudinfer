@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -17,11 +18,17 @@ import (
 
 	"github.com/myusername/cloudinfer/internal/adapters"
 	"github.com/myusername/cloudinfer/internal/config"
+	tracinghttp "github.com/myusername/cloudinfer/internal/http"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Adapter struct {
 	client       *http.Client
 	baseURL      string
+	upstreamHost string
 	apiKey       string
 	defaultModel string
 	headers      map[string]string
@@ -48,6 +55,7 @@ func NewWithClient(cfg config.OpenAIConfig, client *http.Client) (*Adapter, erro
 	return &Adapter{
 		client:       client,
 		baseURL:      normalizeBaseURL(cfg.BaseURL),
+		upstreamHost: upstreamHost(cfg.BaseURL),
 		apiKey:       apiKey,
 		defaultModel: defaultModel(cfg.Model),
 		headers:      cloneHeaders(cfg.ExtraHeaders),
@@ -90,6 +98,7 @@ func (a *Adapter) Generate(ctx context.Context, req adapters.NormalizedRequest) 
 }
 
 func (a *Adapter) generateResponses(ctx context.Context, req adapters.NormalizedRequest, model string) (adapters.Stream, adapters.Meta, error) {
+	ctx, span := a.startSpan(ctx, "responses")
 	payload := responsesRequest{
 		Model:           model,
 		Input:           cloneInput(req.Input),
@@ -100,6 +109,9 @@ func (a *Adapter) generateResponses(ctx context.Context, req adapters.Normalized
 
 	resp, err := a.doJSONRequest(ctx, "/responses", payload)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
 		return nil, adapters.Meta{Model: model, StreamMode: adapters.StreamModeStream}, err
 	}
 
@@ -108,16 +120,22 @@ func (a *Adapter) generateResponses(ctx context.Context, req adapters.Normalized
 		text, readErr := readResponsesJSON(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
+			span.RecordError(readErr)
+			span.SetStatus(codes.Error, readErr.Error())
+			span.End()
 			return nil, meta, readErr
 		}
 		meta.StreamMode = adapters.StreamModeSingle
+		span.AddEvent("first_token")
+		span.End()
 		return adapters.NewTextStream(text), meta, nil
 	}
 
-	return newSSEStream(resp, parseResponsesEvent), meta, nil
+	return adapters.WrapStreamWithSpan(newSSEStream(resp, parseResponsesEvent), span), meta, nil
 }
 
 func (a *Adapter) generateChatCompletions(ctx context.Context, req adapters.NormalizedRequest, model string) (adapters.Stream, adapters.Meta, error) {
+	ctx, span := a.startSpan(ctx, "chat_completions")
 	payload := chatCompletionsRequest{
 		Model:       model,
 		Messages:    toChatMessages(req.Input),
@@ -128,6 +146,9 @@ func (a *Adapter) generateChatCompletions(ctx context.Context, req adapters.Norm
 
 	resp, err := a.doJSONRequest(ctx, "/chat/completions", payload)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
 		return nil, adapters.Meta{Model: model, StreamMode: adapters.StreamModeStream}, err
 	}
 
@@ -136,13 +157,18 @@ func (a *Adapter) generateChatCompletions(ctx context.Context, req adapters.Norm
 		text, readErr := readChatCompletionJSON(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
+			span.RecordError(readErr)
+			span.SetStatus(codes.Error, readErr.Error())
+			span.End()
 			return nil, meta, readErr
 		}
 		meta.StreamMode = adapters.StreamModeSingle
+		span.AddEvent("first_token")
+		span.End()
 		return adapters.NewTextStream(text), meta, nil
 	}
 
-	return newSSEStream(resp, parseChatCompletionEvent), meta, nil
+	return adapters.WrapStreamWithSpan(newSSEStream(resp, parseChatCompletionEvent), span), meta, nil
 }
 
 func (a *Adapter) doJSONRequest(ctx context.Context, path string, payload any) (*http.Response, error) {
@@ -169,6 +195,7 @@ func (a *Adapter) doJSONRequest(ctx context.Context, path string, payload any) (
 	for key, value := range a.headers {
 		req.Header.Set(key, value)
 	}
+	tracinghttp.InjectContext(ctx, req.Header)
 
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -190,6 +217,27 @@ func (a *Adapter) doJSONRequest(ctx context.Context, path string, payload any) (
 	}
 
 	return resp, nil
+}
+
+func (a *Adapter) startSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
+	return otel.Tracer("github.com/myusername/cloudinfer/adapter/openai").Start(
+		ctx,
+		"adapter.call",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("adapter.name", a.Name()),
+			attribute.String("adapter.operation", operation),
+			attribute.String("upstream.host", a.upstreamHost),
+		),
+	)
+}
+
+func upstreamHost(rawBaseURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawBaseURL))
+	if err != nil || parsed.Host == "" {
+		return strings.TrimSpace(rawBaseURL)
+	}
+	return parsed.Host
 }
 
 func newSSEStream(resp *http.Response, parser func(string, []string) (adapters.Delta, error, bool)) adapters.Stream {
