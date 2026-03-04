@@ -149,6 +149,7 @@ Label policy:
 - `status` is the terminal request outcome (`ok`, `bad_request`, `rate_limited`, `timeout`, `auth_failed`, `upstream_error`, `draining`, and similar terminal states)
 - `model` is the resolved response model
 - No other application labels are allowed on these metrics
+- High-cardinality and sensitive labels such as `request_id`, `user_id`, `trace_id`, `session_id`, `prompt`, and `authorization` are explicitly forbidden
 
 Useful PromQL examples:
 
@@ -175,6 +176,11 @@ Safe debug endpoints:
 - Debug endpoints are localhost-only by default
 - Set `server_debug_expose: true` and `server_debug_auth_token_env: YOUR_ENV_VAR` to allow remote access when you explicitly need it
 - Remote callers must send `Authorization: Bearer <token>` or `X-CloudInfer-Debug-Token: <token>`
+
+Smoke verification:
+
+- `go test ./smoke` runs the in-memory metrics contract smoke test
+- `bash smoke/kind-prometheus/verify.sh` deploys CloudInfer plus Prometheus into kind and verifies a real scrape through the Prometheus API
 
 ---
 

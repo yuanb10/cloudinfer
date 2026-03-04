@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,7 +89,7 @@ func TestValidateMetricFamilyRejectsForbiddenLabels(t *testing.T) {
 					{Name: stringPtr("endpoint"), Value: stringPtr("/v1/chat/completions")},
 					{Name: stringPtr("backend"), Value: stringPtr("alpha")},
 					{Name: stringPtr("status"), Value: stringPtr("ok")},
-					{Name: stringPtr("stream"), Value: stringPtr("true")},
+					{Name: stringPtr("request_id"), Value: stringPtr("req_123")},
 				},
 			},
 		},
@@ -97,6 +98,9 @@ func TestValidateMetricFamilyRejectsForbiddenLabels(t *testing.T) {
 	err := ValidateMetricFamily(family)
 	if err == nil {
 		t.Fatal("expected forbidden label validation error")
+	}
+	if !strings.Contains(err.Error(), "request_id") {
+		t.Fatalf("error = %q, want request_id mention", err)
 	}
 }
 
@@ -120,6 +124,23 @@ func TestCollectorRedactsSensitiveLabelValues(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestForbiddenLabelNamesIncludesHighCardinalityExamples(t *testing.T) {
+	names := ForbiddenLabelNames()
+	for _, label := range []string{"request_id", "user_id"} {
+		if !slices.Contains(names, label) {
+			t.Fatalf("forbidden label names = %v, missing %q", names, label)
+		}
+	}
+}
+
+func TestForbiddenLabelsRejectsRequestAndUserID(t *testing.T) {
+	got := ForbiddenLabels("cloudinfer_requests_total", "endpoint", "request_id", "user_id")
+	want := []string{"request_id", "user_id"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("forbidden labels = %v, want %v", got, want)
 	}
 }
 

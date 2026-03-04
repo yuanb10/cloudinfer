@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudinfer-router
+data:
+  router.yaml: |
+    server_host: 0.0.0.0
+    server_port: 8080
+    server_shutdown_grace_seconds: 20
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudinfer
+  labels:
+    app: cloudinfer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudinfer
+  template:
+    metadata:
+      labels:
+        app: cloudinfer
+    spec:
+      containers:
+        - name: cloudinfer
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          args:
+            - -config
+            - /etc/cloudinfer/router.yaml
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: router-config
+              mountPath: /etc/cloudinfer
+              readOnly: true
+      volumes:
+        - name: router-config
+          configMap:
+            name: cloudinfer-router
+            items:
+              - key: router.yaml
+                path: router.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudinfer
+  labels:
+    app: cloudinfer
+spec:
+  selector:
+    app: cloudinfer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

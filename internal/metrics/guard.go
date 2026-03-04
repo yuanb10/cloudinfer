@@ -56,6 +56,18 @@ var allowedMetricLabels = map[string]map[string]struct{}{
 	"cloudinfer_draining": {},
 }
 
+var forbiddenHighCardinalityLabels = map[string]struct{}{
+	"api_key":       {},
+	"authorization": {},
+	"input":         {},
+	"prompt":        {},
+	"request_id":    {},
+	"session_id":    {},
+	"span_id":       {},
+	"trace_id":      {},
+	"user_id":       {},
+}
+
 var (
 	uuidPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
 	emailPattern = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
@@ -71,6 +83,12 @@ func AllowedMetricLabels() map[string][]string {
 	}
 
 	return out
+}
+
+func ForbiddenLabelNames() []string {
+	keys := slices.Collect(maps.Keys(forbiddenHighCardinalityLabels))
+	slices.Sort(keys)
+	return keys
 }
 
 func ValidateMetricFamilies(families []*dto.MetricFamily) error {
@@ -101,6 +119,9 @@ func ValidateMetricFamily(family *dto.MetricFamily) error {
 	for _, metric := range family.Metric {
 		for _, label := range metric.Label {
 			labelName := label.GetName()
+			if _, ok := forbiddenHighCardinalityLabels[labelName]; ok {
+				return fmt.Errorf("metric %q uses forbidden high-cardinality label %q", name, labelName)
+			}
 			if _, ok := allowed[labelName]; !ok {
 				return fmt.Errorf("metric %q has forbidden label %q", name, labelName)
 			}
@@ -136,6 +157,10 @@ func ForbiddenLabels(metricName string, labels ...string) []string {
 	for _, label := range labels {
 		label = strings.TrimSpace(label)
 		if label == "" {
+			continue
+		}
+		if _, ok := forbiddenHighCardinalityLabels[label]; ok {
+			forbidden = append(forbidden, label)
 			continue
 		}
 		if _, ok := allowed[label]; !ok {
