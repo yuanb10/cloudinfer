@@ -41,9 +41,9 @@ There are no stability guarantees at this time.
 
 ## Requirements
 
-- Go 1.24.13+
+- Go 1.25.7+
 
-CloudInfer currently requires Go 1.24.13 or newer due to
+CloudInfer currently requires Go 1.25.7 or newer due to
 `google.golang.org/genai` and its transitive dependency stack.
 
 ---

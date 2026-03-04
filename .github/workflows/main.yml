@@ -18,7 +18,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.13"
+          go-version: "1.25.7"
 
       - name: Set up kind
         uses: engineerd/setup-kind@v0.6.2
@@ -36,7 +36,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.13"
+          go-version: "1.25.7"
 
       - name: Perf smoke
         shell: bash
