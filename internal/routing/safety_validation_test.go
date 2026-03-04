@@ -504,7 +504,7 @@ func simulateStreamingRetrySafety() scenarioReport {
 
 	// Simulate handler logic: request chosen -> start stream -> gets first token -> fails mid-stream
 	decision := router.Choose("default")
-	
+
 	tokensReceived := 0
 	var finalErr error
 	var fallbackAttempted bool

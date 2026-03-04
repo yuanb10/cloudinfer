@@ -21,9 +21,9 @@ const (
 )
 
 type BreakerConfig struct {
-	ConsecutiveFailures  int
-	WindowSize           int
-	FailureRateThreshold float64
+	ConsecutiveFailures   int
+	WindowSize            int
+	FailureRateThreshold  float64
 	HalfOpenProbeInterval time.Duration
 }
 
