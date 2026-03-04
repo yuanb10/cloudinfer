@@ -151,3 +151,44 @@ func TestRouterChooseRespectsMinSamples(t *testing.T) {
 		t.Fatalf("reason = %q, want %q", decision.Reason, "lowest_ewma_ttft")
 	}
 }
+
+func TestRouterExposesPerBackendPolicies(t *testing.T) {
+	router := NewRouter(
+		[]Backend{
+			{
+				Name:   "alpha",
+				Type:   "openai",
+				Client: fakeStreamer{name: "alpha"},
+				Policy: BackendPolicy{
+					Retry: RetryPolicy{MaxAttempts: 1},
+					Timeouts: TimeoutPolicy{
+						TTFT: 25 * time.Millisecond,
+						Idle: 50 * time.Millisecond,
+					},
+				},
+			},
+			{Name: "beta", Type: "vertex", Client: fakeStreamer{name: "beta"}},
+		},
+		NewStatsStore(0.2, 15*time.Second),
+		PolicyConfig{
+			Enabled:    true,
+			Policy:     "ewma_ttft",
+			MinSamples: 5,
+			Retry:      RetryPolicy{MaxAttempts: 3},
+			Timeouts:   TimeoutPolicy{TTFT: 150 * time.Millisecond, Idle: 300 * time.Millisecond},
+		},
+	)
+
+	if got, want := router.RetryPolicyFor("alpha").MaxAttempts, 1; got != want {
+		t.Fatalf("alpha retry max_attempts = %d, want %d", got, want)
+	}
+	if got, want := router.RetryPolicyFor("beta").MaxAttempts, 3; got != want {
+		t.Fatalf("beta retry max_attempts = %d, want %d", got, want)
+	}
+	if got, want := router.TimeoutPolicyFor("alpha").TTFT, 25*time.Millisecond; got != want {
+		t.Fatalf("alpha ttft timeout = %s, want %s", got, want)
+	}
+	if got, want := router.TimeoutPolicyFor("beta").TTFT, 150*time.Millisecond; got != want {
+		t.Fatalf("beta ttft timeout = %s, want %s", got, want)
+	}
+}

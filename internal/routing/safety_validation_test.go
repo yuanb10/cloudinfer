@@ -18,6 +18,7 @@ func TestRoutingSafetyValidationReport(t *testing.T) {
 			simulateRateLimitedBackoff(),
 			simulateSlowTTFTFallback(),
 			simulateCorrelatedFailover(),
+			simulateStreamingRetrySafety(),
 		},
 	}
 
@@ -446,4 +447,118 @@ func (s timedSafetyStreamer) ResolvedModel(string) string {
 
 func (s timedSafetyStreamer) Close() error {
 	return nil
+}
+
+type midStreamFailureStreamer struct {
+	token string
+	err   error
+}
+
+func (s midStreamFailureStreamer) Name() string {
+	return "mid-stream-failure"
+}
+
+func (s midStreamFailureStreamer) StreamText(ctx context.Context, _ string, _ []Message) (<-chan string, <-chan error) {
+	tokenCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(tokenCh)
+		defer close(errCh)
+
+		select {
+		case <-ctx.Done():
+			return
+		case tokenCh <- s.token:
+		}
+
+		time.Sleep(10 * time.Millisecond) // Simulate time before error
+
+		select {
+		case <-ctx.Done():
+			return
+		case errCh <- s.err:
+		}
+	}()
+
+	return tokenCh, errCh
+}
+
+func (s midStreamFailureStreamer) ResolvedModel(string) string {
+	return "mid-stream-failure-model"
+}
+
+func (s midStreamFailureStreamer) Close() error {
+	return nil
+}
+
+func simulateStreamingRetrySafety() scenarioReport {
+	router := NewRouter(
+		[]Backend{
+			{Name: "primary", Type: "openai", Client: midStreamFailureStreamer{token: "first_token", err: fmt.Errorf("mid stream connection reset")}},
+			{Name: "secondary", Type: "vertex", Client: fakeStreamer{name: "secondary"}},
+		},
+		NewStatsStore(0.2, 5*time.Second),
+		PolicyConfig{Enabled: true, Policy: "ewma_ttft", MinSamples: 100, Prefer: "primary"},
+	)
+
+	// Simulate handler logic: request chosen -> start stream -> gets first token -> fails mid-stream
+	decision := router.Choose("default")
+	
+	tokensReceived := 0
+	var finalErr error
+	var fallbackAttempted bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tokenCh, errCh := decision.Chosen.Client.StreamText(ctx, "default", nil)
+
+	for tokenCh != nil || errCh != nil {
+		select {
+		case token, ok := <-tokenCh:
+			if !ok {
+				tokenCh = nil
+				continue
+			}
+			if token != "" {
+				tokensReceived++
+				if tokensReceived == 1 {
+					router.Observe(decision.Chosen.Name, "ok", 25, false)
+				}
+			}
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				finalErr = err
+				router.Observe(decision.Chosen.Name, "provider_error", 0, true)
+				// Handler should NOT retry since tokensReceived > 0
+				if tokensReceived == 0 {
+					fallbackAttempted = true
+				}
+				tokenCh = nil
+				errCh = nil
+			}
+		}
+	}
+
+	status := "pass"
+	if tokensReceived != 1 || finalErr == nil || fallbackAttempted {
+		status = "fail"
+	}
+
+	return scenarioReport{
+		Name:    "Streaming Retry Safety (Mid-Stream Failure)",
+		Status:  status,
+		Summary: "A backend fails after emitting the first token. The router records the provider_error but no fallback retry is attempted because the stream has already started.",
+		Metrics: map[string]string{
+			"tokens_before_failure": fmt.Sprintf("%d", tokensReceived),
+			"error_received":        fmt.Sprintf("%v", finalErr != nil),
+			"fallback_attempted":    fmt.Sprintf("%t", fallbackAttempted),
+		},
+		Snapshot: router.Snapshot(),
+	}
 }

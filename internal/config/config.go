@@ -32,22 +32,47 @@ type VertexConfig struct {
 }
 
 type RoutingConfig struct {
-	Enabled                bool    `mapstructure:"enabled" yaml:"enabled"`
-	EnabledSet             bool    `mapstructure:"-" yaml:"-"`
-	Policy                 string  `mapstructure:"policy" yaml:"policy"`
-	CooldownSeconds        int     `mapstructure:"cooldown_seconds" yaml:"cooldown_seconds"`
-	CooldownJitterFraction float64 `mapstructure:"cooldown_jitter_fraction" yaml:"cooldown_jitter_fraction"`
-	TTFTTimeoutMs          int     `mapstructure:"ttft_timeout_ms" yaml:"ttft_timeout_ms"`
-	EwmaAlpha              float64 `mapstructure:"ewma_alpha" yaml:"ewma_alpha"`
-	MinSamples             int     `mapstructure:"min_samples" yaml:"min_samples"`
-	Prefer                 string  `mapstructure:"prefer" yaml:"prefer"`
+	Enabled                        bool    `mapstructure:"enabled" yaml:"enabled"`
+	EnabledSet                     bool    `mapstructure:"-" yaml:"-"`
+	Policy                         string  `mapstructure:"policy" yaml:"policy"`
+	CooldownSeconds                int     `mapstructure:"cooldown_seconds" yaml:"cooldown_seconds"`
+	CooldownJitterFraction         float64 `mapstructure:"cooldown_jitter_fraction" yaml:"cooldown_jitter_fraction"`
+	TotalTimeoutMs                 int     `mapstructure:"total_timeout_ms" yaml:"total_timeout_ms"`
+	TTFTTimeoutMs                  int     `mapstructure:"ttft_timeout_ms" yaml:"ttft_timeout_ms"`
+	IdleTimeoutMs                  int     `mapstructure:"idle_timeout_ms" yaml:"idle_timeout_ms"`
+	EwmaAlpha                      float64 `mapstructure:"ewma_alpha" yaml:"ewma_alpha"`
+	MinSamples                     int     `mapstructure:"min_samples" yaml:"min_samples"`
+	Prefer                         string  `mapstructure:"prefer" yaml:"prefer"`
+	BreakerConsecutiveFailures     int     `mapstructure:"breaker_consecutive_failures" yaml:"breaker_consecutive_failures"`
+	BreakerWindowSize              int     `mapstructure:"breaker_window_size" yaml:"breaker_window_size"`
+	BreakerFailureRate             float64 `mapstructure:"breaker_failure_rate" yaml:"breaker_failure_rate"`
+	BreakerHalfOpenProbeIntervalMs int     `mapstructure:"breaker_half_open_probe_interval_ms" yaml:"breaker_half_open_probe_interval_ms"`
+	RetryMaxAttempts               int     `mapstructure:"retry_max_attempts" yaml:"retry_max_attempts"`
+	RetryBaseBackoffMs             int     `mapstructure:"retry_base_backoff_ms" yaml:"retry_base_backoff_ms"`
+	RetryMaxBackoffMs              int     `mapstructure:"retry_max_backoff_ms" yaml:"retry_max_backoff_ms"`
+	RetryJitterFraction            float64 `mapstructure:"retry_jitter_fraction" yaml:"retry_jitter_fraction"`
+}
+
+type BackendRoutingConfig struct {
+	TotalTimeoutMs                 *int     `mapstructure:"total_timeout_ms" yaml:"total_timeout_ms"`
+	TTFTTimeoutMs                  *int     `mapstructure:"ttft_timeout_ms" yaml:"ttft_timeout_ms"`
+	IdleTimeoutMs                  *int     `mapstructure:"idle_timeout_ms" yaml:"idle_timeout_ms"`
+	BreakerConsecutiveFailures     *int     `mapstructure:"breaker_consecutive_failures" yaml:"breaker_consecutive_failures"`
+	BreakerWindowSize              *int     `mapstructure:"breaker_window_size" yaml:"breaker_window_size"`
+	BreakerFailureRate             *float64 `mapstructure:"breaker_failure_rate" yaml:"breaker_failure_rate"`
+	BreakerHalfOpenProbeIntervalMs *int     `mapstructure:"breaker_half_open_probe_interval_ms" yaml:"breaker_half_open_probe_interval_ms"`
+	RetryMaxAttempts               *int     `mapstructure:"retry_max_attempts" yaml:"retry_max_attempts"`
+	RetryBaseBackoffMs             *int     `mapstructure:"retry_base_backoff_ms" yaml:"retry_base_backoff_ms"`
+	RetryMaxBackoffMs              *int     `mapstructure:"retry_max_backoff_ms" yaml:"retry_max_backoff_ms"`
+	RetryJitterFraction            *float64 `mapstructure:"retry_jitter_fraction" yaml:"retry_jitter_fraction"`
 }
 
 type BackendInstance struct {
-	Name   string       `mapstructure:"name" yaml:"name"`
-	Type   string       `mapstructure:"type" yaml:"type"`
-	Vertex VertexConfig `mapstructure:"vertex" yaml:"vertex"`
-	OpenAI OpenAIConfig `mapstructure:"openai" yaml:"openai"`
+	Name    string               `mapstructure:"name" yaml:"name"`
+	Type    string               `mapstructure:"type" yaml:"type"`
+	Routing BackendRoutingConfig `mapstructure:"routing" yaml:"routing"`
+	Vertex  VertexConfig         `mapstructure:"vertex" yaml:"vertex"`
+	OpenAI  OpenAIConfig         `mapstructure:"openai" yaml:"openai"`
 }
 
 type OpenAIConfig struct {
@@ -115,10 +140,20 @@ func Load(configPath string) (Config, error) {
 	v.SetDefault("routing.policy", "ewma_ttft")
 	v.SetDefault("routing.cooldown_seconds", 15)
 	v.SetDefault("routing.cooldown_jitter_fraction", 0.2)
+	v.SetDefault("routing.total_timeout_ms", 30000)
 	v.SetDefault("routing.ttft_timeout_ms", 1500)
+	v.SetDefault("routing.idle_timeout_ms", 10000)
 	v.SetDefault("routing.ewma_alpha", 0.2)
 	v.SetDefault("routing.min_samples", 5)
 	v.SetDefault("routing.prefer", "")
+	v.SetDefault("routing.breaker_consecutive_failures", 3)
+	v.SetDefault("routing.breaker_window_size", 5)
+	v.SetDefault("routing.breaker_failure_rate", 0.6)
+	v.SetDefault("routing.breaker_half_open_probe_interval_ms", 1000)
+	v.SetDefault("routing.retry_max_attempts", 2)
+	v.SetDefault("routing.retry_base_backoff_ms", 100)
+	v.SetDefault("routing.retry_max_backoff_ms", 1000)
+	v.SetDefault("routing.retry_jitter_fraction", 0.2)
 	v.SetDefault("openai.api_key_env", "OPENAI_API_KEY")
 	v.SetDefault("openai.base_url", "https://api.openai.com/v1")
 	v.SetDefault("openai.model", "gpt-4o-mini")

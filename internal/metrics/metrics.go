@@ -20,6 +20,10 @@ type Options struct {
 
 type Collector struct {
 	requestsTotal      *prometheus.CounterVec
+	routeDecisions     *prometheus.CounterVec
+	routeFallbacks     *prometheus.CounterVec
+	routeRetries       *prometheus.CounterVec
+	breakerTransitions *prometheus.CounterVec
 	ttftSeconds        *prometheus.HistogramVec
 	streamDuration     *prometheus.HistogramVec
 	draining           prometheus.Gauge
@@ -40,6 +44,34 @@ func NewWithOptions(opts Options) *Collector {
 				Help: "Total number of handled requests by endpoint, backend, and terminal status.",
 			},
 			[]string{"endpoint", "backend", "status"},
+		),
+		routeDecisions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "cloudinfer_route_decisions_total",
+				Help: "Total number of routed backend selections by reason.",
+			},
+			[]string{"backend", "reason"},
+		),
+		routeFallbacks: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "cloudinfer_route_fallbacks_total",
+				Help: "Total number of pre-token fallbacks between backends.",
+			},
+			[]string{"from_backend", "to_backend", "reason"},
+		),
+		routeRetries: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "cloudinfer_route_retries_total",
+				Help: "Total number of retries attempted before first token.",
+			},
+			[]string{"backend", "status"},
+		),
+		breakerTransitions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "cloudinfer_breaker_transitions_total",
+				Help: "Total number of circuit breaker state transitions.",
+			},
+			[]string{"backend", "from_state", "to_state"},
 		),
 		ttftSeconds: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -68,12 +100,62 @@ func NewWithOptions(opts Options) *Collector {
 	}
 
 	c.mustRegister(c.requestsTotal)
+	c.mustRegister(c.routeDecisions)
+	c.mustRegister(c.routeFallbacks)
+	c.mustRegister(c.routeRetries)
+	c.mustRegister(c.breakerTransitions)
 	c.mustRegister(c.ttftSeconds)
 	c.mustRegister(c.streamDuration)
 	c.mustRegister(c.draining)
 	c.draining.Set(0)
 
 	return c
+}
+
+func (c *Collector) ObserveRouteDecision(backend string, reason string) {
+	if c == nil {
+		return
+	}
+
+	c.routeDecisions.WithLabelValues(
+		normalizeLabel(backend, "unknown"),
+		normalizeLabel(reason, "unknown"),
+	).Inc()
+}
+
+func (c *Collector) ObserveRouteFallback(fromBackend string, toBackend string, reason string) {
+	if c == nil {
+		return
+	}
+
+	c.routeFallbacks.WithLabelValues(
+		normalizeLabel(fromBackend, "unknown"),
+		normalizeLabel(toBackend, "unknown"),
+		normalizeLabel(reason, "unknown"),
+	).Inc()
+}
+
+func (c *Collector) ObserveRouteRetry(backend string, status string) {
+	if c == nil {
+		return
+	}
+
+	c.routeRetries.WithLabelValues(
+		normalizeLabel(backend, "unknown"),
+		normalizeLabel(status, "unknown"),
+	).Inc()
+}
+
+func (c *Collector) ObserveBreakerTransition(backend string, fromState string, toState string) {
+	if c == nil {
+		return
+	}
+
+	c.breakerTransitions.WithLabelValues(
+		normalizeLabel(backend, "unknown"),
+		normalizeLabel(fromState, "unknown"),
+		normalizeLabel(toState, "unknown"),
+	).Inc()
 }
 
 func defaultDevMode() bool {

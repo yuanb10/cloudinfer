@@ -27,6 +27,24 @@ var allowedMetricLabels = map[string]map[string]struct{}{
 		"backend":  {},
 		"status":   {},
 	},
+	"cloudinfer_route_decisions_total": {
+		"backend": {},
+		"reason":  {},
+	},
+	"cloudinfer_route_fallbacks_total": {
+		"from_backend": {},
+		"to_backend":   {},
+		"reason":       {},
+	},
+	"cloudinfer_route_retries_total": {
+		"backend": {},
+		"status":  {},
+	},
+	"cloudinfer_breaker_transitions_total": {
+		"backend":    {},
+		"from_state": {},
+		"to_state":   {},
+	},
 	"cloudinfer_ttft_seconds": {
 		"backend": {},
 		"model":   {},

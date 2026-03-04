@@ -59,6 +59,9 @@ To support users with zero Kubernetes knowledge, we include a **"Concepts Bridge
     - Run CloudInfer with two backends (one fast, one artificially slow).
     - Watch the EWMA scores update in `/debug/routes`.
     - Trigger a "Provider Error" and observe the cooldown period.
+    - Add a failure-injection walkthrough for the v0.3.x routing safety milestone:
+      breaker open/half-open recovery under repeated `500`s, `429` + `Retry-After` backoff, slow-TTFT pre-token fallback, and verification that retries stop after the first emitted token.
+    - Inspect the explainability surface in `/debug/routes` and correlate it with breaker, fallback, and retry metrics.
 - **Artifacts:** `codelab/04-telemetry-routing/docker-compose.yaml`, `chaos-test.sh`.
 
 ### Module 5: "The Invisible Hand: Safe Operations" (Expert)

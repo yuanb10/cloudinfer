@@ -29,6 +29,10 @@ func TestMetricsHandlerUsesExactPrometheusTextContentType(t *testing.T) {
 func TestCollectorExposesOnlyAllowedMetricsAndLabels(t *testing.T) {
 	collector := NewWithOptions(Options{DevMode: true})
 	collector.ObserveChatCompletion("/v1/chat/completions", "alpha", "alpha-model", "ok", 25*time.Millisecond, 150*time.Millisecond, true)
+	collector.ObserveRouteDecision("alpha", "lowest_ewma_ttft")
+	collector.ObserveRouteFallback("alpha", "beta", "timeout")
+	collector.ObserveRouteRetry("alpha", "timeout")
+	collector.ObserveBreakerTransition("alpha", "closed", "open")
 	collector.SetDraining(true)
 
 	families, err := collector.Gather()
@@ -43,8 +47,12 @@ func TestCollectorExposesOnlyAllowedMetricsAndLabels(t *testing.T) {
 	slices.Sort(names)
 
 	wantNames := []string{
+		"cloudinfer_breaker_transitions_total",
 		"cloudinfer_draining",
 		"cloudinfer_requests_total",
+		"cloudinfer_route_decisions_total",
+		"cloudinfer_route_fallbacks_total",
+		"cloudinfer_route_retries_total",
 		"cloudinfer_stream_duration_seconds",
 		"cloudinfer_ttft_seconds",
 	}
@@ -53,10 +61,14 @@ func TestCollectorExposesOnlyAllowedMetricsAndLabels(t *testing.T) {
 	}
 
 	wantLabels := map[string][]string{
-		"cloudinfer_requests_total":          {"backend", "endpoint", "status"},
-		"cloudinfer_ttft_seconds":            {"backend", "model"},
-		"cloudinfer_stream_duration_seconds": {"backend", "model"},
-		"cloudinfer_draining":                {},
+		"cloudinfer_breaker_transitions_total": {"backend", "from_state", "to_state"},
+		"cloudinfer_requests_total":            {"backend", "endpoint", "status"},
+		"cloudinfer_route_decisions_total":     {"backend", "reason"},
+		"cloudinfer_route_fallbacks_total":     {"from_backend", "reason", "to_backend"},
+		"cloudinfer_route_retries_total":       {"backend", "status"},
+		"cloudinfer_ttft_seconds":              {"backend", "model"},
+		"cloudinfer_stream_duration_seconds":   {"backend", "model"},
+		"cloudinfer_draining":                  {},
 	}
 	if got := AllowedMetricLabels(); !mapsEqual(got, wantLabels) {
 		t.Fatalf("allowed labels = %v, want %v", got, wantLabels)

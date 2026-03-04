@@ -23,6 +23,7 @@ type Stats struct {
 	errors        int64
 	cooldownUntil time.Time
 	lastStatus    string
+	lastError     string
 	lastTTFTms    int64
 	lastAt        time.Time
 }
@@ -36,6 +37,7 @@ type StatsSnapshot struct {
 	CooldownUntil time.Time
 	InCooldown    bool
 	LastStatus    string
+	LastError     string
 	LastTTFTms    int64
 	LastAt        time.Time
 }
@@ -105,13 +107,21 @@ func (s *StatsStore) ObserveWithCooldown(name string, now time.Time, status stri
 		return
 	}
 
-	cooldown := cooldownOverride
-	if cooldown <= 0 {
-		cooldown = s.cooldown
-		cooldown = applyCooldownJitter(cooldown, s.jitterFraction, s.jitterSource)
-	}
+	cooldown := s.CooldownDuration(cooldownOverride)
 
 	s.Get(name).Observe(now, status, ttftMs, providerError, s.alpha, cooldown)
+}
+
+func (s *StatsStore) CooldownDuration(cooldownOverride time.Duration) time.Duration {
+	if s == nil {
+		return 0
+	}
+
+	if cooldownOverride > 0 {
+		return cooldownOverride
+	}
+
+	return applyDurationJitter(s.cooldown, s.jitterFraction, s.jitterSource)
 }
 
 func (s *StatsStore) Snapshot(now time.Time) map[string]StatsSnapshot {
@@ -155,11 +165,12 @@ func (s *Stats) Observe(now time.Time, status string, ttftMs int64, providerErro
 
 	if providerError {
 		s.errors++
+		s.lastError = status
 		s.cooldownUntil = now.Add(cooldown)
 	}
 }
 
-func applyCooldownJitter(base time.Duration, fraction float64, source func() float64) time.Duration {
+func applyDurationJitter(base time.Duration, fraction float64, source func() float64) time.Duration {
 	if base <= 0 || fraction <= 0 || source == nil {
 		return base
 	}
@@ -203,6 +214,7 @@ func (s *Stats) Snapshot(now time.Time) StatsSnapshot {
 		CooldownUntil: s.cooldownUntil,
 		InCooldown:    !s.cooldownUntil.IsZero() && now.Before(s.cooldownUntil),
 		LastStatus:    s.lastStatus,
+		LastError:     s.lastError,
 		LastTTFTms:    s.lastTTFTms,
 		LastAt:        s.lastAt,
 	}

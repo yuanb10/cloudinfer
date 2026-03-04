@@ -52,8 +52,38 @@ func Validate(cfg Config) error {
 	if cfg.Routing.CooldownJitterFraction < 0 || cfg.Routing.CooldownJitterFraction > 1 {
 		return fmt.Errorf("routing.cooldown_jitter_fraction must be between 0 and 1")
 	}
+	if cfg.Routing.TotalTimeoutMs < 0 {
+		return fmt.Errorf("routing.total_timeout_ms must be >= 0")
+	}
 	if cfg.Routing.TTFTTimeoutMs < 0 {
 		return fmt.Errorf("routing.ttft_timeout_ms must be >= 0")
+	}
+	if cfg.Routing.IdleTimeoutMs < 0 {
+		return fmt.Errorf("routing.idle_timeout_ms must be >= 0")
+	}
+	if cfg.Routing.BreakerConsecutiveFailures < 0 {
+		return fmt.Errorf("routing.breaker_consecutive_failures must be >= 0")
+	}
+	if cfg.Routing.BreakerWindowSize < 0 {
+		return fmt.Errorf("routing.breaker_window_size must be >= 0")
+	}
+	if cfg.Routing.BreakerFailureRate < 0 || cfg.Routing.BreakerFailureRate > 1 {
+		return fmt.Errorf("routing.breaker_failure_rate must be between 0 and 1")
+	}
+	if cfg.Routing.BreakerHalfOpenProbeIntervalMs < 0 {
+		return fmt.Errorf("routing.breaker_half_open_probe_interval_ms must be >= 0")
+	}
+	if cfg.Routing.RetryMaxAttempts < 0 {
+		return fmt.Errorf("routing.retry_max_attempts must be >= 0")
+	}
+	if cfg.Routing.RetryBaseBackoffMs < 0 {
+		return fmt.Errorf("routing.retry_base_backoff_ms must be >= 0")
+	}
+	if cfg.Routing.RetryMaxBackoffMs < 0 {
+		return fmt.Errorf("routing.retry_max_backoff_ms must be >= 0")
+	}
+	if cfg.Routing.RetryJitterFraction < 0 || cfg.Routing.RetryJitterFraction > 1 {
+		return fmt.Errorf("routing.retry_jitter_fraction must be between 0 and 1")
 	}
 
 	seen := make(map[string]struct{}, len(cfg.Backends))
@@ -79,12 +109,54 @@ func Validate(cfg Config) error {
 		default:
 			return fmt.Errorf("backend %q type must be \"vertex\" or \"openai\"", name)
 		}
+
+		if err := validateBackendRoutingConfig(name, backend.Routing); err != nil {
+			return err
+		}
 	}
 
 	if strings.TrimSpace(cfg.Routing.Prefer) != "" && !slices.ContainsFunc(cfg.Backends, func(backend BackendInstance) bool {
 		return backend.Name == cfg.Routing.Prefer
 	}) {
 		return fmt.Errorf("routing.prefer must match a configured backend name")
+	}
+
+	return nil
+}
+
+func validateBackendRoutingConfig(name string, cfg BackendRoutingConfig) error {
+	if cfg.TotalTimeoutMs != nil && *cfg.TotalTimeoutMs < 0 {
+		return fmt.Errorf("backend %q routing.total_timeout_ms must be >= 0", name)
+	}
+	if cfg.TTFTTimeoutMs != nil && *cfg.TTFTTimeoutMs < 0 {
+		return fmt.Errorf("backend %q routing.ttft_timeout_ms must be >= 0", name)
+	}
+	if cfg.IdleTimeoutMs != nil && *cfg.IdleTimeoutMs < 0 {
+		return fmt.Errorf("backend %q routing.idle_timeout_ms must be >= 0", name)
+	}
+	if cfg.BreakerConsecutiveFailures != nil && *cfg.BreakerConsecutiveFailures < 0 {
+		return fmt.Errorf("backend %q routing.breaker_consecutive_failures must be >= 0", name)
+	}
+	if cfg.BreakerWindowSize != nil && *cfg.BreakerWindowSize < 0 {
+		return fmt.Errorf("backend %q routing.breaker_window_size must be >= 0", name)
+	}
+	if cfg.BreakerFailureRate != nil && (*cfg.BreakerFailureRate < 0 || *cfg.BreakerFailureRate > 1) {
+		return fmt.Errorf("backend %q routing.breaker_failure_rate must be between 0 and 1", name)
+	}
+	if cfg.BreakerHalfOpenProbeIntervalMs != nil && *cfg.BreakerHalfOpenProbeIntervalMs < 0 {
+		return fmt.Errorf("backend %q routing.breaker_half_open_probe_interval_ms must be >= 0", name)
+	}
+	if cfg.RetryMaxAttempts != nil && *cfg.RetryMaxAttempts < 0 {
+		return fmt.Errorf("backend %q routing.retry_max_attempts must be >= 0", name)
+	}
+	if cfg.RetryBaseBackoffMs != nil && *cfg.RetryBaseBackoffMs < 0 {
+		return fmt.Errorf("backend %q routing.retry_base_backoff_ms must be >= 0", name)
+	}
+	if cfg.RetryMaxBackoffMs != nil && *cfg.RetryMaxBackoffMs < 0 {
+		return fmt.Errorf("backend %q routing.retry_max_backoff_ms must be >= 0", name)
+	}
+	if cfg.RetryJitterFraction != nil && (*cfg.RetryJitterFraction < 0 || *cfg.RetryJitterFraction > 1) {
+		return fmt.Errorf("backend %q routing.retry_jitter_fraction must be between 0 and 1", name)
 	}
 
 	return nil

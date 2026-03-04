@@ -161,11 +161,23 @@ func TestDebugRoutesReturnsStatsAndNoSecrets(t *testing.T) {
 	if len(body.Backends) != 2 {
 		t.Fatalf("backends = %d, want 2", len(body.Backends))
 	}
+	if body.Current.Reason == "" {
+		t.Fatal("current route reason is empty")
+	}
 	if body.Backends[0].Stats.Samples != 1 {
 		t.Fatalf("samples = %d, want 1", body.Backends[0].Stats.Samples)
 	}
+	if body.Backends[0].Breaker.State == "" {
+		t.Fatal("breaker state is empty")
+	}
+	if body.Backends[0].RouteReason == "" {
+		t.Fatal("backend route reason is empty")
+	}
 	if body.Backends[1].Stats.Total != 0 {
 		t.Fatalf("failed backend total = %d, want 0", body.Backends[1].Stats.Total)
+	}
+	if body.Backends[1].Health != "unavailable" {
+		t.Fatalf("failed backend health = %q, want %q", body.Backends[1].Health, "unavailable")
 	}
 }
 
@@ -182,6 +194,17 @@ func TestDebugConfigMasksHeaderValues(t *testing.T) {
 			Model:     "gpt-4o-mini",
 			ExtraHeaders: map[string]string{
 				"Authorization": "Bearer sk-live-secret",
+			},
+		},
+		Backends: []config.BackendInstance{
+			{
+				Name: "alpha",
+				Type: "openai",
+				Routing: config.BackendRoutingConfig{
+					TTFTTimeoutMs:       intPtr(20),
+					RetryMaxAttempts:    intPtr(1),
+					RetryJitterFraction: floatPtr(0.1),
+				},
 			},
 		},
 	}
@@ -215,6 +238,17 @@ func TestDebugConfigMasksHeaderValues(t *testing.T) {
 	if body.OpenAI.ExtraHeaders["Authorization"] != "<masked>" {
 		t.Fatalf("authorization header = %q, want %q", body.OpenAI.ExtraHeaders["Authorization"], "<masked>")
 	}
+	if body.Backends[0].Routing.TTFTTimeoutMs == nil || *body.Backends[0].Routing.TTFTTimeoutMs != 20 {
+		t.Fatalf("backend routing ttft timeout = %v, want %d", body.Backends[0].Routing.TTFTTimeoutMs, 20)
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
 }
 
 func TestDebugEndpointsRejectNonLoopbackByDefault(t *testing.T) {

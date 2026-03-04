@@ -123,10 +123,13 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 		defer release()
 	}
 
+	execCtx, cancel := s.executionContextForRequest(r.Context(), req.Model)
+	defer cancel()
+
 	backendName := "mock"
 	responseModel := req.Model
 
-	prepared, status, err := s.prepareBackendStream(r.Context(), req.Model, req.RoutingMessages())
+	prepared, status, err := s.prepareBackendStream(execCtx, req.Model, req.RoutingMessages())
 	if err != nil {
 		if status == "client_cancel" {
 			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, -1, start, created)
@@ -150,21 +153,21 @@ func (s *Server) streamChatCompletion(w http.ResponseWriter, r *http.Request, id
 	w.WriteHeader(http.StatusOK)
 
 	if prepared != nil {
-		s.streamRoutedChatCompletion(w, r, flusher, id, created, backendName, responseModel, prepared, start)
+		s.streamRoutedChatCompletion(w, r, execCtx, flusher, id, created, backendName, responseModel, prepared, start)
 		return
 	}
 
-	s.streamMockChatCompletion(w, r, flusher, id, created, backendName, responseModel, start)
+	s.streamMockChatCompletion(w, r, execCtx, flusher, id, created, backendName, responseModel, start)
 }
 
-func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, start time.Time) {
+func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request, ctx context.Context, flusher http.Flusher, id string, created int64, backendName string, responseModel string, start time.Time) {
 	var ttftMs int64 = -1
 	firstChunkSent := false
 
 	for _, char := range "hello" {
 		select {
-		case <-r.Context().Done():
-			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		case <-ctx.Done():
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, statusForExecutionContext(ctx), ttftMs, start, created)
 			return
 		default:
 		}
@@ -184,7 +187,7 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 		}
 
 		if err := writeSSEData(w, chunk); err != nil {
-			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyExecutionFailure(r, ctx), ttftMs, start, created)
 			return
 		}
 		if !firstChunkSent {
@@ -210,27 +213,27 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 	}
 
 	select {
-	case <-r.Context().Done():
-		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+	case <-ctx.Done():
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, statusForExecutionContext(ctx), ttftMs, start, created)
 		return
 	default:
 	}
 
 	if err := writeSSEData(w, finalChunk); err != nil {
-		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyExecutionFailure(r, ctx), ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
 
 	select {
-	case <-r.Context().Done():
-		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+	case <-ctx.Done():
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, statusForExecutionContext(ctx), ttftMs, start, created)
 		return
 	default:
 	}
 
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyStreamError(r), ttftMs, start, created)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, classifyExecutionFailure(r, ctx), ttftMs, start, created)
 		return
 	}
 	flusher.Flush()
@@ -238,11 +241,13 @@ func (s *Server) streamMockChatCompletion(w http.ResponseWriter, r *http.Request
 	s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, prepared *preparedBackendStream, start time.Time) {
+func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Request, ctx context.Context, flusher http.Flusher, id string, created int64, backendName string, responseModel string, prepared *preparedBackendStream, start time.Time) {
 	defer prepared.Close()
 
 	var ttftMs int64 = -1
 	firstTokenReceived := false
+	budget := routing.BudgetFromContext(ctx)
+	idleTimeout := s.timeoutPolicyFor(prepared.decision.Chosen.Name).Idle
 
 	tokenCh, errCh := prepared.tokenCh, prepared.errCh
 
@@ -264,7 +269,7 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 			},
 		}
 		if err := writeSSEData(w, chunk); err != nil {
-			status := classifyStreamError(r)
+			status := classifyExecutionFailure(r, ctx)
 			s.observeRoute(prepared.decision, status, ttftMs)
 			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 			return
@@ -273,17 +278,19 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	}
 
 	for tokenCh != nil || errCh != nil {
-		select {
-		case <-r.Context().Done():
-			s.observeRoute(prepared.decision, "client_cancel", ttftMs)
-			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		next := waitForNextStreamEvent(ctx, tokenCh, errCh, budget, idleTimeout)
+		switch {
+		case next.status != "":
+			s.observeRouteWithError(prepared.decision, next.status, ttftMs, next.err)
+			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, next.status, ttftMs, start, created)
 			return
-		case token, ok := <-tokenCh:
-			if !ok {
-				tokenCh = nil
-				continue
-			}
-
+		case next.tokenClosed:
+			tokenCh = nil
+			continue
+		case next.errClosed:
+			errCh = nil
+			continue
+		default:
 			if !firstTokenReceived {
 				ttftMs = time.Since(start).Milliseconds()
 				firstTokenReceived = true
@@ -297,35 +304,19 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 				Choices: []chatCompletionChoice{
 					{
 						Index:        0,
-						Delta:        &chatDelta{Content: token},
+						Delta:        &chatDelta{Content: next.token},
 						FinishReason: nil,
 					},
 				},
 			}
 
 			if err := writeSSEData(w, chunk); err != nil {
-				status := classifyStreamError(r)
+				status := classifyExecutionFailure(r, ctx)
 				s.observeRoute(prepared.decision, status, ttftMs)
 				s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 				return
 			}
 			flusher.Flush()
-		case err, ok := <-errCh:
-			if !ok {
-				errCh = nil
-				continue
-			}
-			if err == nil {
-				continue
-			}
-
-			status := classifyProviderError(r, err)
-			if status == "upstream_error" {
-				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, prepared.decision.Chosen.Name, prepared.decision.Chosen.Type, responseModel, err)
-			}
-			s.observeRouteWithError(prepared.decision, status, ttftMs, err)
-			s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
-			return
 		}
 	}
 
@@ -345,15 +336,16 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	}
 
 	select {
-	case <-r.Context().Done():
-		s.observeRoute(prepared.decision, "client_cancel", ttftMs)
-		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+	case <-ctx.Done():
+		status := statusForExecutionContext(ctx)
+		s.observeRoute(prepared.decision, status, ttftMs)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	default:
 	}
 
 	if err := writeSSEData(w, finalChunk); err != nil {
-		status := classifyStreamError(r)
+		status := classifyExecutionFailure(r, ctx)
 		s.observeRoute(prepared.decision, status, ttftMs)
 		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
@@ -361,15 +353,16 @@ func (s *Server) streamRoutedChatCompletion(w http.ResponseWriter, r *http.Reque
 	flusher.Flush()
 
 	select {
-	case <-r.Context().Done():
-		s.observeRoute(prepared.decision, "client_cancel", ttftMs)
-		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+	case <-ctx.Done():
+		status := statusForExecutionContext(ctx)
+		s.observeRoute(prepared.decision, status, ttftMs)
+		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	default:
 	}
 
 	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
-		status := classifyStreamError(r)
+		status := classifyExecutionFailure(r, ctx)
 		s.observeRoute(prepared.decision, status, ttftMs)
 		s.recordRequest(chatCompletionsEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return

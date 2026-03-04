@@ -57,3 +57,47 @@ func TestValidateRejectsInvalidRoutingJitter(t *testing.T) {
 		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
+
+func TestValidateRejectsInvalidBackendRoutingOverride(t *testing.T) {
+	cfg := Config{
+		ServerConfig: ServerConfig{
+			Host:                 "127.0.0.1",
+			Port:                 8080,
+			ShutdownGraceSeconds: 20,
+		},
+		Backends: []BackendInstance{
+			{
+				Name: "alpha",
+				Type: "openai",
+				OpenAI: OpenAIConfig{
+					APIKeyEnv: "OPENAI_API_KEY",
+				},
+				Routing: BackendRoutingConfig{
+					RetryJitterFraction: floatPtr(2),
+				},
+			},
+			{
+				Name: "beta",
+				Type: "openai",
+				OpenAI: OpenAIConfig{
+					APIKeyEnv: "OPENAI_API_KEY",
+				},
+			},
+		},
+		Routing: RoutingConfig{
+			Policy: "ewma_ttft",
+		},
+	}
+
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if got, want := err.Error(), `backend "alpha" routing.retry_jitter_fraction must be between 0 and 1`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
+}

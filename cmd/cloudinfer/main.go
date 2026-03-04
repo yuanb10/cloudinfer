@@ -47,6 +47,7 @@ func main() {
 			Name: backendCfg.Name,
 			Type: backendCfg.Type,
 		}
+		backendPolicy := buildBackendRoutingPolicy(cfg.Routing, backendCfg.Routing)
 
 		switch backendCfg.Type {
 		case "vertex":
@@ -65,6 +66,7 @@ func main() {
 				Name:   backendCfg.Name,
 				Type:   backendCfg.Type,
 				Client: streamer,
+				Policy: backendPolicy,
 			})
 			defer func(name string, client routing.Streamer) {
 				if err := client.Close(); err != nil {
@@ -87,6 +89,7 @@ func main() {
 				Name:   backendCfg.Name,
 				Type:   backendCfg.Type,
 				Client: streamer,
+				Policy: backendPolicy,
 			})
 			defer func(name string, client routing.Streamer) {
 				if err := client.Close(); err != nil {
@@ -110,6 +113,24 @@ func main() {
 			EwmaAlpha:       cfg.Routing.EwmaAlpha,
 			MinSamples:      int64(cfg.Routing.MinSamples),
 			Prefer:          cfg.Routing.Prefer,
+			Breaker: routing.BreakerConfig{
+				ConsecutiveFailures:   cfg.Routing.BreakerConsecutiveFailures,
+				WindowSize:            cfg.Routing.BreakerWindowSize,
+				FailureRateThreshold:  cfg.Routing.BreakerFailureRate,
+				HalfOpenProbeInterval: time.Duration(cfg.Routing.BreakerHalfOpenProbeIntervalMs) * time.Millisecond,
+			},
+			Retry: routing.RetryPolicy{
+				MaxAttempts:    cfg.Routing.RetryMaxAttempts,
+				BaseBackoff:    time.Duration(cfg.Routing.RetryBaseBackoffMs) * time.Millisecond,
+				MaxBackoff:     time.Duration(cfg.Routing.RetryMaxBackoffMs) * time.Millisecond,
+				JitterFraction: cfg.Routing.RetryJitterFraction,
+				JitterSource:   rand.Float64,
+			},
+			Timeouts: routing.TimeoutPolicy{
+				Total: time.Duration(cfg.Routing.TotalTimeoutMs) * time.Millisecond,
+				TTFT:  time.Duration(cfg.Routing.TTFTTimeoutMs) * time.Millisecond,
+				Idle:  time.Duration(cfg.Routing.IdleTimeoutMs) * time.Millisecond,
+			},
 		})
 	}
 
@@ -185,4 +206,63 @@ func main() {
 
 		log.Printf("server shutdown completed")
 	}
+}
+
+func buildBackendRoutingPolicy(global config.RoutingConfig, override config.BackendRoutingConfig) routing.BackendPolicy {
+	policy := routing.BackendPolicy{
+		Breaker: routing.BreakerConfig{
+			ConsecutiveFailures:   global.BreakerConsecutiveFailures,
+			WindowSize:            global.BreakerWindowSize,
+			FailureRateThreshold:  global.BreakerFailureRate,
+			HalfOpenProbeInterval: time.Duration(global.BreakerHalfOpenProbeIntervalMs) * time.Millisecond,
+		},
+		Retry: routing.RetryPolicy{
+			MaxAttempts:    global.RetryMaxAttempts,
+			BaseBackoff:    time.Duration(global.RetryBaseBackoffMs) * time.Millisecond,
+			MaxBackoff:     time.Duration(global.RetryMaxBackoffMs) * time.Millisecond,
+			JitterFraction: global.RetryJitterFraction,
+			JitterSource:   rand.Float64,
+		},
+		Timeouts: routing.TimeoutPolicy{
+			Total: time.Duration(global.TotalTimeoutMs) * time.Millisecond,
+			TTFT:  time.Duration(global.TTFTTimeoutMs) * time.Millisecond,
+			Idle:  time.Duration(global.IdleTimeoutMs) * time.Millisecond,
+		},
+	}
+
+	if override.TotalTimeoutMs != nil {
+		policy.Timeouts.Total = time.Duration(*override.TotalTimeoutMs) * time.Millisecond
+	}
+	if override.TTFTTimeoutMs != nil {
+		policy.Timeouts.TTFT = time.Duration(*override.TTFTTimeoutMs) * time.Millisecond
+	}
+	if override.IdleTimeoutMs != nil {
+		policy.Timeouts.Idle = time.Duration(*override.IdleTimeoutMs) * time.Millisecond
+	}
+	if override.BreakerConsecutiveFailures != nil {
+		policy.Breaker.ConsecutiveFailures = *override.BreakerConsecutiveFailures
+	}
+	if override.BreakerWindowSize != nil {
+		policy.Breaker.WindowSize = *override.BreakerWindowSize
+	}
+	if override.BreakerFailureRate != nil {
+		policy.Breaker.FailureRateThreshold = *override.BreakerFailureRate
+	}
+	if override.BreakerHalfOpenProbeIntervalMs != nil {
+		policy.Breaker.HalfOpenProbeInterval = time.Duration(*override.BreakerHalfOpenProbeIntervalMs) * time.Millisecond
+	}
+	if override.RetryMaxAttempts != nil {
+		policy.Retry.MaxAttempts = *override.RetryMaxAttempts
+	}
+	if override.RetryBaseBackoffMs != nil {
+		policy.Retry.BaseBackoff = time.Duration(*override.RetryBaseBackoffMs) * time.Millisecond
+	}
+	if override.RetryMaxBackoffMs != nil {
+		policy.Retry.MaxBackoff = time.Duration(*override.RetryMaxBackoffMs) * time.Millisecond
+	}
+	if override.RetryJitterFraction != nil {
+		policy.Retry.JitterFraction = *override.RetryJitterFraction
+	}
+
+	return policy
 }

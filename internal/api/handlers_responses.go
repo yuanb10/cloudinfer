@@ -70,11 +70,14 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) respondResponses(w http.ResponseWriter, r *http.Request, id string, created int64, req NormalizedRequest, start time.Time) {
+	execCtx, cancel := s.executionContextForRequest(r.Context(), req.Model)
+	defer cancel()
+
 	backendName := "mock"
 	responseModel := req.Model
 	var decision routing.Decision
 
-	prepared, status, err := s.prepareBackendStream(r.Context(), req.Model, req.RoutingMessages())
+	prepared, status, err := s.prepareBackendStream(execCtx, req.Model, req.RoutingMessages())
 	if err != nil {
 		if status == "client_cancel" {
 			s.recordRequest(responsesEndpoint, id, backendName, responseModel, false, status, -1, start, created)
@@ -92,7 +95,7 @@ func (s *Server) respondResponses(w http.ResponseWriter, r *http.Request, id str
 		responseModel = prepared.responseModel
 	}
 
-	outputText, ttftMs, status, err := s.collectResponsesOutput(r.Context(), req, decision, responseModel, prepared, start)
+	outputText, ttftMs, status, err := s.collectResponsesOutput(execCtx, req, decision, responseModel, prepared, start)
 	if err != nil {
 		if status == "client_cancel" {
 			s.observeRoute(decision, status, ttftMs)
@@ -136,11 +139,14 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, id stri
 		defer release()
 	}
 
+	execCtx, cancel := s.executionContextForRequest(r.Context(), req.Model)
+	defer cancel()
+
 	backendName := "mock"
 	responseModel := req.Model
 	var decision routing.Decision
 
-	prepared, status, err := s.prepareBackendStream(r.Context(), req.Model, req.RoutingMessages())
+	prepared, status, err := s.prepareBackendStream(execCtx, req.Model, req.RoutingMessages())
 	if err != nil {
 		if status == "client_cancel" {
 			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, -1, start, created)
@@ -174,14 +180,14 @@ func (s *Server) streamResponses(w http.ResponseWriter, r *http.Request, id stri
 	flusher.Flush()
 
 	if prepared != nil {
-		s.streamRoutedResponse(w, r, flusher, id, created, backendName, responseModel, prepared, start)
+		s.streamRoutedResponse(w, r, execCtx, flusher, id, created, backendName, responseModel, prepared, start)
 		return
 	}
 
-	s.streamMockResponse(w, r, flusher, id, created, backendName, responseModel, start)
+	s.streamMockResponse(w, r, execCtx, flusher, id, created, backendName, responseModel, start)
 }
 
-func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, start time.Time) {
+func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, ctx context.Context, flusher http.Flusher, id string, created int64, backendName string, responseModel string, start time.Time) {
 	var (
 		builder       strings.Builder
 		ttftMs        int64 = -1
@@ -190,8 +196,8 @@ func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, flus
 
 	for sequence, char := range "hello" {
 		select {
-		case <-r.Context().Done():
-			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
+		case <-ctx.Done():
+			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, statusForExecutionContext(ctx), ttftMs, start, created)
 			return
 		default:
 		}
@@ -218,7 +224,7 @@ func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, flus
 			delta.ChunkLatency.Milliseconds(),
 		)
 		if err := writeSSEEvent(w, event.Type, event); err != nil {
-			status := classifyStreamError(r)
+			status := classifyExecutionFailure(r, ctx)
 			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 			return
 		}
@@ -227,7 +233,7 @@ func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, flus
 
 	completedEvent := openaitypes.NewResponseCompletedEvent(openaitypes.NewResponse(id, responseModel, "completed", created, builder.String()))
 	if err := writeSSEEvent(w, completedEvent.Type, completedEvent); err != nil {
-		status := classifyStreamError(r)
+		status := classifyExecutionFailure(r, ctx)
 		s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
 	}
@@ -236,7 +242,7 @@ func (s *Server) streamMockResponse(w http.ResponseWriter, r *http.Request, flus
 	s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, "ok", ttftMs, start, created)
 }
 
-func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, flusher http.Flusher, id string, created int64, backendName string, responseModel string, prepared *preparedBackendStream, start time.Time) {
+func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, ctx context.Context, flusher http.Flusher, id string, created int64, backendName string, responseModel string, prepared *preparedBackendStream, start time.Time) {
 	defer prepared.Close()
 
 	var (
@@ -245,6 +251,8 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 		firstTokenReceived       = false
 		lastChunkTime            = start
 		sequence                 = 0
+		budget                   = routing.BudgetFromContext(ctx)
+		idleTimeout              = s.timeoutPolicyFor(prepared.decision.Chosen.Name).Idle
 	)
 
 	tokenCh, errCh := prepared.tokenCh, prepared.errCh
@@ -271,7 +279,7 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 			delta.ChunkLatency.Milliseconds(),
 		)
 		if err := writeSSEEvent(w, event.Type, event); err != nil {
-			status := classifyStreamError(r)
+			status := classifyExecutionFailure(r, ctx)
 			s.observeRoute(prepared.decision, status, ttftMs)
 			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 			return
@@ -280,20 +288,28 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 	}
 
 	for tokenCh != nil || errCh != nil {
-		select {
-		case <-r.Context().Done():
-			s.observeRoute(prepared.decision, "client_cancel", ttftMs)
-			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, "client_cancel", ttftMs, start, created)
-			return
-		case token, ok := <-tokenCh:
-			if !ok {
-				tokenCh = nil
-				continue
+		event := waitForNextStreamEvent(ctx, tokenCh, errCh, budget, idleTimeout)
+		switch {
+		case event.status != "":
+			if event.status == "upstream_error" {
+				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, prepared.decision.Chosen.Name, prepared.decision.Chosen.Type, responseModel, event.err)
 			}
-
+			if event.status != "client_cancel" {
+				_ = writeResponsesStreamError(w, flusher, responseErrorMessage(event.status), errorTypeForStatus(event.status))
+			}
+			s.observeRouteWithError(prepared.decision, event.status, ttftMs, event.err)
+			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, event.status, ttftMs, start, created)
+			return
+		case event.tokenClosed:
+			tokenCh = nil
+			continue
+		case event.errClosed:
+			errCh = nil
+			continue
+		default:
 			now := time.Now()
 			delta := NormalizedDelta{
-				Text:         token,
+				Text:         event.token,
 				At:           now,
 				ChunkLatency: now.Sub(lastChunkTime),
 				Sequence:     sequence,
@@ -305,45 +321,28 @@ func (s *Server) streamRoutedResponse(w http.ResponseWriter, r *http.Request, fl
 			}
 			lastChunkTime = now
 			sequence++
-			builder.WriteString(token)
+			builder.WriteString(event.token)
 
 			event := openaitypes.NewResponseOutputTextDeltaEvent(
 				id,
-				token,
+				event.token,
 				delta.Sequence,
 				delta.TTFT.Milliseconds(),
 				delta.ChunkLatency.Milliseconds(),
 			)
 			if err := writeSSEEvent(w, event.Type, event); err != nil {
-				status := classifyStreamError(r)
+				status := classifyExecutionFailure(r, ctx)
 				s.observeRoute(prepared.decision, status, ttftMs)
 				s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 				return
 			}
 			flusher.Flush()
-		case err, ok := <-errCh:
-			if !ok {
-				errCh = nil
-				continue
-			}
-			if err == nil {
-				continue
-			}
-
-			status := classifyProviderError(r, err)
-			if status == "upstream_error" {
-				log.Printf("backend stream error request_id=%s backend=%s backend_type=%s model=%s err=%v", id, prepared.decision.Chosen.Name, prepared.decision.Chosen.Type, responseModel, err)
-			}
-			_ = writeResponsesStreamError(w, flusher, responseErrorMessage(status), errorTypeForStatus(status))
-			s.observeRouteWithError(prepared.decision, status, ttftMs, err)
-			s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
-			return
 		}
 	}
 
 	completedEvent := openaitypes.NewResponseCompletedEvent(openaitypes.NewResponse(id, responseModel, "completed", created, builder.String()))
 	if err := writeSSEEvent(w, completedEvent.Type, completedEvent); err != nil {
-		status := classifyStreamError(r)
+		status := classifyExecutionFailure(r, ctx)
 		s.observeRoute(prepared.decision, status, ttftMs)
 		s.recordRequest(responsesEndpoint, id, backendName, responseModel, true, status, ttftMs, start, created)
 		return
@@ -363,6 +362,8 @@ func (s *Server) collectResponsesOutput(ctx context.Context, req NormalizedReque
 		builder       strings.Builder
 		ttftMs        int64 = -1
 		firstReceived       = false
+		budget              = routing.BudgetFromContext(ctx)
+		idleTimeout         = s.timeoutPolicyFor(decision.Chosen.Name).Idle
 	)
 
 	tokenCh, errCh := prepared.tokenCh, prepared.errCh
@@ -373,28 +374,22 @@ func (s *Server) collectResponsesOutput(ctx context.Context, req NormalizedReque
 	}
 
 	for tokenCh != nil || errCh != nil {
-		select {
-		case <-ctx.Done():
-			return builder.String(), ttftMs, "client_cancel", ctx.Err()
-		case token, ok := <-tokenCh:
-			if !ok {
-				tokenCh = nil
-				continue
-			}
+		event := waitForNextStreamEvent(ctx, tokenCh, errCh, budget, idleTimeout)
+		switch {
+		case event.status != "":
+			return builder.String(), ttftMs, event.status, event.err
+		case event.tokenClosed:
+			tokenCh = nil
+			continue
+		case event.errClosed:
+			errCh = nil
+			continue
+		default:
 			if !firstReceived {
 				ttftMs = time.Since(start).Milliseconds()
 				firstReceived = true
 			}
-			builder.WriteString(token)
-		case err, ok := <-errCh:
-			if !ok {
-				errCh = nil
-				continue
-			}
-			if err == nil {
-				continue
-			}
-			return builder.String(), ttftMs, responseStatusFromContext(ctx, err), err
+			builder.WriteString(event.token)
 		}
 	}
 
