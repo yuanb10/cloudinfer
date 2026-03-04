@@ -93,7 +93,7 @@ fi
 
 wait_for_query 'up%7Bjob%3D%22cloudinfer%22%7D' '"result":[{'
 wait_for_query 'up%7Bjob%3D%22cloudinfer%22%7D' ',"1"'
-wait_for_query 'cloudinfer_draining' '"metric":{}'
+wait_for_query 'cloudinfer_draining' '"cloudinfer_draining"'
 
 echo "Prometheus scrape smoke test passed."
 echo "Cluster: $CLUSTER_NAME"
