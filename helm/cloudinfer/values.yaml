@@ -1,0 +1,51 @@
+image:
+  repository: ghcr.io/example/cloudinfer
+  tag: v0.1.0-alpha
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  name: cloudinfer
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+routerConfig: |
+  server_host: 0.0.0.0
+  server_port: 8080
+  server_shutdown_grace_seconds: 60
+
+  routing:
+    enabled: true
+    policy: ewma_ttft
+    cooldown_seconds: 15
+    ewma_alpha: 0.2
+    min_samples: 5
+    prefer: vertex-fallback
+
+  backends:
+    - name: openai-primary
+      type: openai
+      openai:
+        api_key_env: OPENAI_API_KEY
+        base_url: https://api.openai.com/v1
+        model: gpt-4o-mini
+        timeout_seconds: 60
+
+    - name: vertex-fallback
+      type: vertex
+      vertex:
+        project: your-gcp-project-id
+        location: us-central1
+        model: gemini-2.0-flash-lite-001
+
+    - name: vertex-secondary
+      type: vertex
+      vertex:
+        project: your-gcp-project-id
+        location: us-central1
+        model: gemini-2.5-pro

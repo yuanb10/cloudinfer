@@ -1,7 +1,10 @@
 package tracinghttp
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	nethttp "net/http"
 
 	"go.opentelemetry.io/otel"
@@ -71,4 +74,36 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(statusCode int) {
 	r.status = statusCode
 	r.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (r *statusRecorder) Flush() {
+	flusher, ok := r.ResponseWriter.(nethttp.Flusher)
+	if !ok {
+		return
+	}
+	flusher.Flush()
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(nethttp.Hijacker)
+	if !ok {
+		return nil, nil, nethttp.ErrNotSupported
+	}
+	return hijacker.Hijack()
+}
+
+func (r *statusRecorder) Push(target string, opts *nethttp.PushOptions) error {
+	pusher, ok := r.ResponseWriter.(nethttp.Pusher)
+	if !ok {
+		return nethttp.ErrNotSupported
+	}
+	return pusher.Push(target, opts)
+}
+
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	readerFrom, ok := r.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return io.Copy(r.ResponseWriter, src)
+	}
+	return readerFrom.ReadFrom(src)
 }

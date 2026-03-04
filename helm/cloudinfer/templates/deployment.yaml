@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudinfer
+  labels:
+    app: cloudinfer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudinfer
+  template:
+    metadata:
+      labels:
+        app: cloudinfer
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: cloudinfer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - -config
+            - /etc/cloudinfer/router.yaml
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloudinfer-secrets
+                  key: OPENAI_API_KEY
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: router-config
+              mountPath: /etc/cloudinfer
+              readOnly: true
+      volumes:
+        - name: router-config
+          configMap:
+            name: cloudinfer-router
+            items:
+              - key: router.yaml
+                path: router.yaml

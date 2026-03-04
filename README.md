@@ -41,9 +41,9 @@ There are no stability guarantees at this time.
 
 ## Requirements
 
-- Go 1.23+
+- Go 1.25.7+
 
-CloudInfer currently requires Go 1.23 or newer due to
+CloudInfer currently requires Go 1.25.7 or newer due to
 `google.golang.org/genai` and its transitive dependency stack.
 
 ---
@@ -180,7 +180,9 @@ Safe debug endpoints:
 Smoke verification:
 
 - `go test ./smoke` runs the in-memory metrics contract smoke test
+- `bash smoke/kind-e2e/verify.sh` deploys CloudInfer to kind with the dev overlay and checks rollout behavior under streaming load
 - `bash smoke/kind-prometheus/verify.sh` deploys CloudInfer plus Prometheus into kind and verifies a real scrape through the Prometheus API
+- `bash smoke/perf/verify.sh` runs short latency, allocation, and tracing-overhead smoke checks
 
 ---
 
@@ -198,7 +200,23 @@ Defaults:
 - `terminationGracePeriodSeconds: 60` (overridable in overlays)
 
 The long grace period plus readiness flip on SIGTERM give in-flight SSE streams time to drain instead of being cut mid-response.
-Enable the optional ClusterIP Service by uncommenting `service.yaml` in `deploy/base/kustomization.yaml` or adding it as a resource in an overlay.
+The ClusterIP Service is included in the base kustomization.
+The sidecar pod example remains available at `deploy/base/pod-sidecar-example.yaml` as a reference manifest, but it is not applied by default.
+
+## Helm
+
+A minimal Helm chart is available at `helm/cloudinfer`.
+
+- Scope is intentionally small: Deployment, ConfigMap, and ServiceAccount only
+- `kubectl apply -k deploy/...` remains the canonical deployment path
+- Keep Helm values close to the base manifest defaults
+
+## Governance
+
+- Contribution guide: `CONTRIBUTING.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+- Security policy: `SECURITY.md`
+- Release process: `RELEASE.md`
 
 ---
 

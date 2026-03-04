@@ -192,3 +192,33 @@ func attributeValue(attrs []attribute.KeyValue, key string) string {
 	}
 	return ""
 }
+
+func TestTracingMiddlewarePreservesStreamingResponses(t *testing.T) {
+	mux := http.NewServeMux()
+	NewServer(&config.Config{}, noopLogger{}, metrics.New(), nil, readyRuntime(), nil).RegisterRoutes(mux)
+	server := httptest.NewServer(tracinghttp.NewTracingMiddleware(mux))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"default","stream":true,"messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d, body=%q", resp.StatusCode, http.StatusOK, string(bodyBytes))
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", got)
+	}
+	if !strings.Contains(string(bodyBytes), "data: [DONE]") {
+		t.Fatalf("stream body missing done marker: %q", string(bodyBytes))
+	}
+}
