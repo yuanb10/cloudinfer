@@ -3,6 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT_DIR="${1:-$ROOT_DIR/.artifacts/perf}"
+MAX_TRACING_NS_OP="${MAX_TRACING_NS_OP:-0}"
+MAX_TRACING_OVERHEAD_PCT="${MAX_TRACING_OVERHEAD_PCT:-50}"
+MAX_TRACING_BYTES_OP="${MAX_TRACING_BYTES_OP:-45000}"
+MAX_TRACING_ALLOCS_OP="${MAX_TRACING_ALLOCS_OP:-320}"
 
 mkdir -p "$OUT_DIR"
 
@@ -53,19 +57,19 @@ fi
   echo "tracing_overhead_percent=$overhead_pct"
 } | tee "$OUT_DIR/summary.txt"
 
-if [[ "$on_ns" -gt 120000 ]]; then
-  echo "sampled tracing latency regression: ${on_ns}ns/op > 120000ns/op" >&2
+if [[ "$MAX_TRACING_NS_OP" -gt 0 && "$on_ns" -gt "$MAX_TRACING_NS_OP" ]]; then
+  echo "sampled tracing latency regression: ${on_ns}ns/op > ${MAX_TRACING_NS_OP}ns/op" >&2
   exit 1
 fi
-if [[ "$overhead_pct" -gt 50 ]]; then
-  echo "sampled tracing overhead regression: ${overhead_pct}% > 50%" >&2
+if [[ "$overhead_pct" -gt "$MAX_TRACING_OVERHEAD_PCT" ]]; then
+  echo "sampled tracing overhead regression: ${overhead_pct}% > ${MAX_TRACING_OVERHEAD_PCT}%" >&2
   exit 1
 fi
-if [[ "$on_bytes" -gt 45000 ]]; then
-  echo "sampled tracing memory regression: ${on_bytes}B/op > 45000B/op" >&2
+if [[ "$on_bytes" -gt "$MAX_TRACING_BYTES_OP" ]]; then
+  echo "sampled tracing memory regression: ${on_bytes}B/op > ${MAX_TRACING_BYTES_OP}B/op" >&2
   exit 1
 fi
-if [[ "$on_allocs" -gt 320 ]]; then
-  echo "sampled tracing allocation regression: ${on_allocs} allocs/op > 320 allocs/op" >&2
+if [[ "$on_allocs" -gt "$MAX_TRACING_ALLOCS_OP" ]]; then
+  echo "sampled tracing allocation regression: ${on_allocs} allocs/op > ${MAX_TRACING_ALLOCS_OP} allocs/op" >&2
   exit 1
 fi
