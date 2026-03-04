@@ -26,7 +26,7 @@ Base manifests:
 - [configmap.yaml](../deploy/base/configmap.yaml)
 - [secret.yaml](../deploy/base/secret.yaml)
 - [deployment.yaml](../deploy/base/deployment.yaml)
-- [pod-sidecar-example.yaml](../deploy/base/pod-sidecar-example.yaml)
+- [pod-sidecar-example.yaml](../deploy/base/pod-sidecar-example.yaml) (reference manifest only; not applied by the default kustomization)
 
 The sidecar example mounts `router.yaml` from a ConfigMap, injects `OPENAI_API_KEY` from a Secret, and configures:
 

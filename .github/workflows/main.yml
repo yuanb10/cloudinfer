@@ -1,0 +1,49 @@
+name: Main and Nightly
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  kind-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - name: Set up kind
+        uses: engineerd/setup-kind@v0.6.2
+
+      - name: Kubernetes e2e smoke
+        shell: bash
+        run: bash smoke/kind-e2e/verify.sh
+
+  perf-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - name: Perf smoke
+        shell: bash
+        run: bash smoke/perf/verify.sh .artifacts/perf
+
+      - name: Upload perf artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke
+          path: .artifacts/perf

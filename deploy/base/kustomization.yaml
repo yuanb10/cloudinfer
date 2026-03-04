@@ -6,4 +6,3 @@ resources:
   - serviceaccount.yaml
   - service.yaml
   - secret.yaml
-  - pod-sidecar-example.yaml

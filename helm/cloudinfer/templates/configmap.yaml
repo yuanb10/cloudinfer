@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudinfer-router
+data:
+  router.yaml: |
+{{ .Values.routerConfig | indent 4 }}
