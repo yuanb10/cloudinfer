@@ -31,7 +31,7 @@ Our labs are progressive. Each one builds on the last:
 ---
 
 ## Prerequisites
-- **Go 1.23+** installed on your laptop.
+- **Go 1.25.7+** installed on your laptop.
 - A terminal with `curl` available.
 - Run the commands below from the repository root.
 

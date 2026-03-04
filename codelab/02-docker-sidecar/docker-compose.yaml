@@ -1,0 +1,24 @@
+services:
+  cloudinfer:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command:
+      - -config
+      - /etc/cloudinfer/router.yaml
+    volumes:
+      - ./router.yaml:/etc/cloudinfer/router.yaml:ro
+    ports:
+      - "18080:8080"
+
+  app:
+    image: python:3.12-alpine
+    network_mode: "service:cloudinfer"
+    working_dir: /app
+    volumes:
+      - ./app:/app:ro
+    depends_on:
+      - cloudinfer
+    command:
+      - sleep
+      - infinity

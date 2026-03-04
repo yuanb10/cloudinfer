@@ -1,0 +1,10 @@
+services:
+  cloudinfer:
+    environment:
+      BACKEND: vertex
+      VERTEX_PROJECT: ${VERTEX_PROJECT}
+      VERTEX_LOCATION: ${VERTEX_LOCATION:-us-central1}
+      VERTEX_MODEL: ${VERTEX_MODEL:-gemini-2.5-flash-lite}
+      GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/application_default_credentials.json
+    volumes:
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/var/secrets/google/application_default_credentials.json:ro
