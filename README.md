@@ -34,7 +34,11 @@ agent toolkit, or model wrapper.
 
 This project is in very early development.
 
-APIs and internal behavior may change.
+Latest prerelease: `v0.3.0-alpha.1`.
+
+This is an alpha release. APIs, config, operational contracts, and deployment
+details may still change between releases.
+
 There are no stability guarantees at this time.
 
 ---
@@ -62,6 +66,15 @@ Start the server:
 go run ./cmd/cloudinfer -config router.yaml
 ```
 
+Run the published alpha container image:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$PWD/router.yaml:/etc/cloudinfer/router.yaml:ro" \
+  ghcr.io/yuanb10/cloudinfer:v0.3.0-alpha.1 \
+  -config /etc/cloudinfer/router.yaml
+```
+
 Send a chat-completions streaming request:
 
 ```bash
@@ -82,7 +95,7 @@ curl -N http://localhost:8080/v1/responses \
 
 ## Responses API (supported subset)
 
-CloudInfer v0.2.0-alpha supports a narrow, explicitly documented subset of
+CloudInfer `v0.3.0-alpha.1` supports a narrow, explicitly documented subset of
 `POST /v1/responses`.
 
 Supported request fields:
@@ -186,13 +199,16 @@ Smoke verification:
 
 ---
 
-## Kubernetes Deploy (v0.1.0-alpha)
+## Kubernetes Deploy
 
 Apply the dev overlay (router-only Deployment + ConfigMap + ServiceAccount):
 
 ```bash
 kubectl apply -k deploy/overlays/dev/
 ```
+
+For a tagged container image in Kubernetes, set the image to
+`ghcr.io/yuanb10/cloudinfer:v0.3.0-alpha.1` in your overlay or Helm values.
 
 Defaults:
 - `livenessProbe` -> `GET /healthz`
